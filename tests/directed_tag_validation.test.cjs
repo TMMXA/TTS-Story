@@ -37,3 +37,22 @@ test('warnings do not depend on a valid pair or include standalone expression cu
     }
     assert.equal(ctx.getSpeakerTagIssues('[direction]Warmly.[/direction][narrator]Hello [laugh] [question-en] [1].[/narrator]').length, 0);
 });
+
+test('Chinese IDs survive rename, matching, warnings and multiple repairs', () => {
+    const { ctx, textarea } = context();
+    assert.equal(ctx.formatSpeakerTagName(' 叶临渊 '), '叶临渊');
+    assert.equal(ctx.formatSpeakerTagName('Élise Female'), 'élise-female');
+    assert.equal(ctx.normalizeSpeakerLabel('林清雪'), '林清雪');
+    assert.notEqual(ctx.normalizeSpeakerLabel('林清雪'), ctx.normalizeSpeakerLabel('叶临渊'));
+    const speakers = ['旁白', '叶临渊', '林清雪'];
+    textarea.value = speakers.map(s => `[${s}]原文。[1][laugh][/direction]`).join('\n');
+    assert.equal(ctx.getSpeakerTagIssues(textarea.value).length, 3);
+    ctx._autoFixTagBalance();
+    assert.equal(textarea.value, speakers.map(s => `[${s}]原文。[1][laugh][/${s}]`).join('\n'));
+    assert.equal(ctx.getSpeakerTagIssues(textarea.value).length, 0);
+    assert.equal(ctx.getSpeakerTagIssues('[叶临渊]没有闭合。').length, 1);
+    for (const name of ['Ⅷ', '³号', '角色_2', 'Élise']) {
+        assert.equal(ctx.getSpeakerTagIssues(`[${name}]原文。[/${name}]`).length, 0);
+        assert.equal(ctx.getSpeakerTagIssues(`[${name}]原文。`).length, 1);
+    }
+});

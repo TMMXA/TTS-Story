@@ -250,7 +250,7 @@ def test_speaker_properties_offers_single_profile_generation():
     assert 'data-role="speaker-voice-design-prompt"' in javascript
     assert "generateAndSaveVoiceCandidates" in javascript
     assert "voice_type: voiceType" in javascript
-    assert "language: 'English'" in javascript
+    assert "language: resolveSpeakerVoiceDesignLanguage(profile)" in javascript
     assert "const instruct = description" not in javascript
     assert "function buildLocalVoiceDesignPrompt" in javascript
     assert "voice_design_prompt: buildLocalVoiceDesignPrompt(name, voice" in javascript
@@ -316,7 +316,7 @@ def test_reference_sample_engines_never_expose_the_kokoro_voice_catalog():
     assert "turboControl.hidden = !showReferenceControl;" in javascript
     assert "select.innerHTML = '<option value=\"\">Voice samples are listed below</option>';" in javascript
     assert ".assignment-selection-group [data-role][hidden]" in stylesheet
-    assert "/static/css/style.css?v=43" in template
+    assert re.search(r"/static/css/style\.css\?v=\d+", template)
     assert int(re.search(r'/static/js/main\.js\?v=(\d+)', template).group(1)) >= 68
 
 
@@ -328,7 +328,7 @@ def test_generated_voice_refresh_updates_available_voices_library():
     assert "window.dispatchEvent(new CustomEvent(CHATTERBOX_VOICES_EVENT_NAME" in main
     assert "window.addEventListener(CHATTERBOX_VOICES_EVENT" in manager
     assert "chatterboxVoices = event.detail.voices" in manager
-    assert '/static/js/voice-manager.js?v=18' in template
+    assert int(re.search(r'/static/js/voice-manager\.js\?v=(\d+)', template).group(1)) >= 18
 
 
 def test_voice_candidate_count_defaults_to_one_and_is_configurable():

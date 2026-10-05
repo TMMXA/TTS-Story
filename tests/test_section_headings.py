@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from src.pause_markers import pause_seconds_for_text, sanitize_display_title
+from src.chinese_novel.chapter_detection import (
+    CHINESE_CHAPTER_LABEL, chinese_chapters_enabled, find_chinese_heading_matches,
+)
+from src.chinese_novel.speaker_ids import SPEAKER_NAME_PATTERN, SpeakerBlockSlices
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +31,7 @@ def _load_heading_helpers():
         "_keyword_to_regex",
         "_clean_heading_text",
         "_build_section_heading_pattern",
+        "_find_section_heading_matches",
         "_build_sections_from_matches",
         "split_text_into_sections",
         "split_text_into_book_sections",
@@ -46,6 +51,11 @@ def _load_heading_helpers():
         "List": List,
         "Optional": Optional,
         "sanitize_display_title": sanitize_display_title,
+        "CHINESE_CHAPTER_LABEL": CHINESE_CHAPTER_LABEL,
+        "chinese_chapters_enabled": chinese_chapters_enabled,
+        "find_chinese_heading_matches": find_chinese_heading_matches,
+        "SPEAKER_NAME_PATTERN": SPEAKER_NAME_PATTERN,
+        "SpeakerBlockSlices": SpeakerBlockSlices,
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace
