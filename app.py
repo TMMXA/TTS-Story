@@ -10367,6 +10367,8 @@ def process_text_with_gemini():
 
         config = load_config()
         config['novel_settings'] = normalize_novel_settings(data.get('novel_settings'), config)
+        if config['novel_settings']['language'] == 'auto' and is_chinese_novel(config['novel_settings'], text):
+            config['novel_settings']['language'] = 'Chinese'
         provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
         if provider == "gemini":
             api_key = (config.get('gemini_api_key') or '').strip()

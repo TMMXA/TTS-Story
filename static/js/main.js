@@ -3360,7 +3360,11 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
     const inputEl = document.getElementById('input-text');
     const enabledHeadings = getEnabledSectionHeadings();
     const promptOverride = savedProgress?.prompt_override ?? getSelectedGeminiPromptOverride();
-    const novelSettings = savedProgress?.novel_settings || getChineseNovelSettings();
+    const novelSettings = {...(savedProgress?.novel_settings || getChineseNovelSettings())};
+    // Resolve Auto for the whole novel so Latin-only sections retain source protection.
+    if (novelSettings.language === 'auto' && isChineseNovelSettings(novelSettings, text)) {
+        novelSettings.language = 'Chinese';
+    }
     let characterRegistry;
     try {
         characterRegistry = savedProgress?.character_registry || getChineseNovelRegistry();

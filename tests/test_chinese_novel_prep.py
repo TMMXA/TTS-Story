@@ -232,3 +232,31 @@ def test_section_endpoint_keeps_source_trailing_separator(monkeypatch):
     source = '正文。\r\n\n'
     response = app_module.app.test_client().post('/api/gemini/process-section', json={'content': source, 'novel_settings': {'language': 'Chinese'}})
     assert re.sub(r'\[/?旁白\]', '', response.json['result_text']) == source
+
+
+@pytest.mark.parametrize('endpoint', ['/api/gemini/process', '/api/gemini/process-full'])
+def test_auto_chinese_book_keeps_latin_subsections_under_source_protection(monkeypatch, endpoint):
+    import app as app_module
+    monkeypatch.setattr(app_module, 'load_config', lambda: {'llm_provider': 'local'})
+    chinese = '原文中文。'
+    latin = 'Original English passage.'
+    sections = [{'content': chinese, 'source': 'chunk', 'context': ''},
+                {'content': latin, 'source': 'chunk', 'context': chinese}]
+    monkeypatch.setattr(app_module, 'build_gemini_sections', lambda *args: sections)
+    profile = {'id': 'primary', 'provider': 'local', 'name': 'test', 'model': 'test'}
+    calls = []
+    def generate(prompt, config, **kwargs):
+        body = prompt.rsplit('CURRENT SOURCE（只标注以下原文）：\n', 1)[-1]
+        calls.append((body, config['novel_settings']['language']))
+        response = '[旁白]' + chinese + '[/旁白]' if body == chinese else '[narrator]CHANGED[/narrator]'
+        return response, profile, []
+    monkeypatch.setattr(app_module, '_run_llm_prompt_with_failover', generate)
+    response = app_module.app.test_client().post(endpoint, json={
+        'text': chinese + '\n\n' + latin, 'novel_settings': {'language': 'auto'}})
+    assert response.status_code == 400
+    assert response.json['success'] is False
+    assert 'result_text' not in response.json
+    assert len(calls) == 3  # Chinese accepted once; bad Latin gets one correction retry.
+    assert calls[0][0] == chinese
+    assert all(body == latin for body, _ in calls[1:])
+    assert all(language == 'Chinese' for _, language in calls)
