@@ -6,6 +6,7 @@ import logging
 from typing import List, Optional
 
 import requests
+from src.llm_output import reject_truncated_output
 
 LLM_PROVIDER_LMSTUDIO = "lmstudio"
 LLM_PROVIDER_OLLAMA = "ollama"
@@ -187,6 +188,8 @@ class LocalLLMProcessor:
         if not choices:
             raise LocalLLMProcessorError("Local LLM response did not include any choices")
 
+        reject_truncated_output(choices[0].get('finish_reason'))
+
         message = choices[0].get("message") or {}
         content = message.get("content")
         if not content:
@@ -231,6 +234,7 @@ class LocalLLMProcessor:
             )
 
         data = response.json()
+        reject_truncated_output(data.get('done_reason'))
         message = data.get("message") or {}
         content = message.get("content")
         if not content:

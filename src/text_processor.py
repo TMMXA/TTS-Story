@@ -6,6 +6,8 @@ from typing import List, Dict, Tuple
 
 from src.pause_markers import pause_seconds_for_text, split_text_and_pause_markers
 from src.tag_validation import speaker_names
+from src.chinese_novel.text_units import contains_cjk, chunk_text_units, count_text_units
+from src.chinese_novel.speaker_ids import SPEAKER_NAME_PATTERN, SPEAKER_BLOCK_PATTERN
 
 
 class TextProcessor:
@@ -49,7 +51,7 @@ class TextProcessor:
         self.char_hard_limit = max(self.char_soft_limit, char_hard_limit or 500)
         self.allow_sentence_overflow = bool(allow_sentence_overflow)
         # Support both [speakerN] and [name] formats (e.g., [narrator], [john], etc.)
-        self.speaker_pattern = r'\[([a-zA-Z0-9_\-]+)\](.*?)\[/\1\]'
+        self.speaker_pattern = SPEAKER_BLOCK_PATTERN
         # [direction] is the preferred form; [emotion] remains compatible.
         self.emotion_pattern = r'\[(?:emotion|direction)\](.*?)\[/(?:emotion|direction)\]'
     
@@ -118,12 +120,12 @@ class TextProcessor:
         # Pattern: optional [direction] or legacy [emotion], then speaker content.
         combined_pattern = (
             r'(?:\[(?:emotion|direction)\](.*?)\[/(?:emotion|direction)\]\s*)?'
-            r'\[([a-zA-Z0-9_\-]+)\]'                  # Speaker opening tag (group 2)
+            rf'\[({SPEAKER_NAME_PATTERN})\]'           # Speaker opening tag (group 2)
             r'(.*?)'                                   # Speaker content (group 3)
             r'\[/\2\]'                                 # Speaker closing tag (backreference)
         )
         
-        matches = list(re.finditer(combined_pattern, text, re.DOTALL))
+        matches = list(re.finditer(combined_pattern, text, re.DOTALL | re.IGNORECASE))
         cursor = 0
         last_speaker = "default"
 
@@ -187,6 +189,8 @@ class TextProcessor:
     def _chunk_text_by_words(self, text: str, max_words: int = None) -> List[str]:
         if max_words is None:
             max_words = self.chunk_size
+        if contains_cjk(text):
+            return chunk_text_units(text, max_words)
         # Use sentence-boundary-aware splitting so chunks never end mid-sentence.
         # A chunk may exceed max_words when a single sentence is longer than the limit;
         # that is intentional — it is always better to overflow than to cut a sentence.
@@ -265,6 +269,8 @@ class TextProcessor:
     @classmethod
     def _sentence_boundaries(cls, text: str) -> List[int]:
         boundaries: List[int] = []
+        for match in re.finditer(r'[。！？；]+[”’"\')\]]*|…{2,}[”’"\')\]]*', text):
+            boundaries.append(match.end())
         for match in re.finditer(r'[.!?]+["\')\]]*(?=\s|$)', text):
             punctuation = re.match(r'[.!?]+', match.group(0)).group(0)
             if "!" in punctuation or "?" in punctuation:
@@ -273,7 +279,7 @@ class TextProcessor:
             if cls._period_is_abbreviation(text, match.start(), match.end()):
                 continue
             boundaries.append(match.end())
-        return boundaries
+        return sorted(set(boundaries))
 
     @classmethod
     def _period_is_abbreviation(cls, text: str, start: int, end: int) -> bool:
@@ -314,7 +320,7 @@ class TextProcessor:
 
         while len(remaining) > hard_limit:
             boundary_idx = self._find_sentence_boundary_before_limit(remaining, hard_limit)
-            if boundary_idx is None and self.allow_sentence_overflow:
+            if boundary_idx is None and self.allow_sentence_overflow and not contains_cjk(remaining):
                 # No sentence boundary before the hard limit — look ahead past it for
                 # the next .!? so we never cut mid-sentence.  Only fall back to
                 # whitespace / hard-char split when there is truly no terminator at all.
@@ -433,7 +439,7 @@ class TextProcessor:
         Returns:
             Estimated duration in seconds
         """
-        word_count = len(text.split())
+        word_count = count_text_units(text)
         return (word_count / words_per_minute) * 60
         
     def has_emotion_tags(self, text: str) -> bool:
@@ -464,7 +470,7 @@ class TextProcessor:
         segments = self.process_text(text)
         
         total_chunks = sum(len(seg["chunks"]) for seg in segments)
-        word_count = len(text.split())
+        word_count = count_text_units(text)
         
         # Count segments with emotions
         segments_with_emotion = sum(1 for seg in segments if seg.get("emotion"))

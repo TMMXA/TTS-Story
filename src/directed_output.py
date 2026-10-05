@@ -5,9 +5,10 @@ import re
 from collections import Counter
 
 from src.structured_output import StructuredOutputError, parse_structured_response
+from src.chinese_novel.speaker_ids import SPEAKER_BLOCK_PATTERN
 
 CONTROL = re.compile(r'\[direction\](.*?)\[/direction\]\s*', re.S | re.I)
-BLOCK = re.compile(r'\[([\w-]+)\](.*?)\[/\1\]', re.S)
+BLOCK = re.compile(SPEAKER_BLOCK_PATTERN, re.S | re.I)
 # A deliberately conservative vocabulary gate. Unknown language requires review
 # instead of pretending a regex can prove contextual appropriateness.
 AUDIBLE_WORDS = set('''speak narrate deliver read continue whisper murmur with a an the

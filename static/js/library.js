@@ -989,7 +989,7 @@ function downloadLibraryItem(jobId) {
 function buildChapterDownloadName(selected) {
     if (!selected || !selected.relative_path) return '';
     const rawTitle = selected.title || 'Chapter';
-    const sanitizedTitle = rawTitle.replace(/[^a-z0-9\-_. ]/gi, '').trim().replace(/\s+/g, ' ');
+    const sanitizedTitle = rawTitle.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').trim().replace(/\s+/g, ' ');
     const extension = selected.relative_path.split('.').pop() || 'mp3';
     const chapterNumber = Number.isFinite(selected.chapter_number)
         ? selected.chapter_number
@@ -1305,7 +1305,7 @@ function openM4BDownloadModal(jobId, title) {
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${title.replace(/[^a-z0-9]/gi, '_')}.m4b`;
+            a.download = `${title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'Audiobook'}.m4b`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);

@@ -8,6 +8,13 @@ If you appreciate what we do and would like to support ongoing development:
 
 ---
 
+## Chinese Novel Edition
+
+This fork adds CJK-aware chunks, Chinese chapter detection, Unicode speaker tags,
+Chinese Prep/Profile presets and Mandarin VoiceDesign references to the existing
+audiobook workflow. See the [中文小说工作流](docs/chinese-novel-workflow.md) and
+[validation report](docs/chinese-novel-validation.md).
+
 # Current Updates and Notes - updated 09-13-2026
 
 - **IndexTTS 2.5 and emotional direction** - upgraded isolated installation with multilingual voice cloning, GPU/BF16 support, and passage directions translated into IndexTTS emotion controls. Version 2 remains selectable. Existing users can reinstall IndexTTS from Engine Settings to obtain the updated runtime.

@@ -43,8 +43,19 @@ from werkzeug.utils import secure_filename
 import soundfile as sf
 
 from src.audio_effects import VoiceFXSettings
+from src.chinese_novel.chapter_detection import (
+    CHINESE_CHAPTER_LABEL, chinese_chapters_enabled, find_chinese_heading_matches, detect_heading,
+)
+from src.chinese_novel.speaker_ids import SPEAKER_NAME_PATTERN, SPEAKER_BLOCK_PATTERN, SpeakerBlockSlices
 from src.voice_directions import attach_speaker_profiles, clean_speaker_profile
+from src.chinese_novel.voice_design import (
+    CHINESE_SPEAKER_PROFILE_PROMPT, chinese_voice_age, chinese_voice_gender,
+    default_voice_accent, pad_voice_preview, resolve_voice_language,
+)
 from src.directed_prompt_presets import with_directed_presets
+from src.chinese_novel.prompts import (
+    normalize_novel_settings, is_chinese_novel, compose_novel_prompt, preserve_source_markup, join_novel_sections, heading_only_source,
+)
 from src.audio_merger import AudioMerger
 from src.custom_voice_store import (
     CUSTOM_CODE_PREFIX,
@@ -64,6 +75,7 @@ from src.library_metadata import (
     merge_generated_library_metadata,
 )
 from src.library_cleanup import remove_directory_with_retries
+from src.library_download import resolve_full_story_download, safe_audio_path
 from src.json_storage import write_json_atomic
 from src.pause_markers import (
     pause_seconds_for_text,
@@ -93,6 +105,7 @@ from src.local_llm_processor import (
 from src.replicate_api import ReplicateAPI
 from src.system_tools import find_system_tool
 from src.text_processor import TextProcessor
+from src.chinese_novel.text_units import chunk_text_units, contains_cjk, count_text_units
 from src.engines import TtsEngineBase
 from src.engines.chatterbox_turbo_local_engine import (
     CHATTERBOX_TURBO_AVAILABLE,
@@ -271,6 +284,7 @@ VOICE_DESIGN_CASTING_GENERATION = {
     "max_new_tokens": MAX_VOICE_DESIGN_PREVIEW_TOKENS,
 }
 DEFAULT_CONFIG = {
+    'novel_settings': normalize_novel_settings(),
     "replicate_api_key": "",
     "chunk_size": 500,
     "kokoro_chunk_size": 500,
@@ -1278,6 +1292,7 @@ BOOK_HEADING_PATTERN = re.compile(
 )
 
 SECTION_HEADING_KEYWORDS = [
+    CHINESE_CHAPTER_LABEL,
     "book",
     "chapter",
     "section",
@@ -1390,12 +1405,14 @@ def _build_section_heading_pattern(section_headings: Optional[Any] = None) -> re
     if section_headings is not None:
         for heading in _normalize_custom_headings(section_headings):
             lowered = heading.lower()
+            if lowered == CHINESE_CHAPTER_LABEL:
+                continue
             if lowered not in keywords:
                 keywords.append(lowered)
     # If no section_headings provided (None), use default keywords
     # If section_headings is explicitly empty list, use no keywords
     if section_headings is None and not keywords:
-        keywords = list(SECTION_HEADING_KEYWORDS)
+        keywords = [word for word in SECTION_HEADING_KEYWORDS if word != CHINESE_CHAPTER_LABEL]
     keyword_regex = "|".join(filter(None, (_keyword_to_regex(word) for word in keywords)))
     if not keyword_regex:
         # An explicit empty selection means detection is disabled.  Use an
@@ -1405,6 +1422,19 @@ def _build_section_heading_pattern(section_headings: Optional[Any] = None) -> re
         rf'^\s*(?:\[[^\]]+\]\s*)*(({keyword_regex})[^\n\r]*)$',
         re.IGNORECASE | re.MULTILINE
     )
+
+
+def _find_section_heading_matches(text: str, section_headings: Optional[Any] = None) -> List[re.Match]:
+    """Share the same independent detectors across analysis, Prep and export."""
+    matches = list(_build_section_heading_pattern(section_headings).finditer(text))
+    headings = None if section_headings is None else _normalize_custom_headings(section_headings)
+    if chinese_chapters_enabled(headings):
+        # Custom markers can overlap a Chinese line; each source heading is
+        # one boundary even if both detectors recognize it.
+        occupied = [(m.start(1), m.end(1)) for m in matches]
+        matches.extend(m for m in find_chinese_heading_matches(text)
+                       if not any(start <= m.start(1) < end for start, end in occupied))
+    return sorted(matches, key=lambda m: m.start())
 
 # Exceptions
 class JobCancelled(Exception):
@@ -3492,16 +3522,18 @@ def _build_sections_from_matches(
             sections.append({"title": "Full Story", "content": clean_text})
         return sections
 
+    speaker_slices = SpeakerBlockSlices(text)
+
     # A delivery instruction belongs to the heading's speaker, not to the
     # preceding section. Regex matches may start at [/direction] or [narrator],
     # so normalize boundaries before slicing either adjacent section.
     boundaries = []
     for match in matches:
         start = match.start()
-        prefix = re.match(r'(?:\s*\[/[a-zA-Z0-9_\-]+\]\s*)+', text[start:])
+        prefix = re.match(rf'(?:\s*\[/{SPEAKER_NAME_PATTERN}\]\s*)+', text[start:])
         if prefix:
             start += prefix.end()
-        opening = re.search(r'\[([a-zA-Z0-9_\-]+)\]\s*$', text[:start])
+        opening = re.search(rf'\[({SPEAKER_NAME_PATTERN})\]\s*$', text[:start])
         if opening:
             start = opening.start()
         instruction = re.search(
@@ -3514,7 +3546,7 @@ def _build_sections_from_matches(
 
     first_start = boundaries[0]
     if first_start > 0:
-        pre_content = text[:first_start].strip()
+        pre_content = speaker_slices.slice(0, first_start)
         if pre_content:
             # Create a "Title" section for content before the first heading.
             # Only do this if the first match is not at the very start (position 0),
@@ -3522,10 +3554,10 @@ def _build_sections_from_matches(
             sections.append({"title": "Title", "content": pre_content})
 
     # Matches a closing speaker tag at the very start of a string (possibly after whitespace)
-    _leading_close_tag_re = re.compile(r'^(\s*\[/([a-zA-Z0-9_\-]+)\])', re.DOTALL)
-    _leading_close_tags_re = re.compile(r'^(?:\s*\[/[a-zA-Z0-9_\-]+\]\s*)+', re.DOTALL)
+    _leading_close_tag_re = re.compile(rf'^(\s*\[/({SPEAKER_NAME_PATTERN})\])', re.DOTALL)
+    _leading_close_tags_re = re.compile(rf'^(?:\s*\[/{SPEAKER_NAME_PATTERN}\]\s*)+', re.DOTALL)
     # Matches a lone opening speaker tag on its own line immediately before a heading
-    _lone_open_tag_re = re.compile(r'\[([a-zA-Z0-9_\-]+)\]\s*$')
+    _lone_open_tag_re = re.compile(rf'\[({SPEAKER_NAME_PATTERN})\]\s*$')
 
     for idx, match in enumerate(matches):
         start = boundaries[idx]
@@ -3561,7 +3593,7 @@ def _build_sections_from_matches(
         if leading_close_tags:
             start += leading_close_tags.end()
 
-        content = text[start:end].strip()
+        content = speaker_slices.slice(start, end)
         if not content:
             continue
         heading_raw = (match.group(0) or "").strip()
@@ -3586,8 +3618,7 @@ def split_text_into_sections(text: str, section_headings: Optional[Any] = None) 
     divided into books (for example, The Odyssey) to be exported as many
     unrelated books containing generic "Full Book" chapters.
     """
-    section_pattern = _build_section_heading_pattern(section_headings)
-    section_matches = list(section_pattern.finditer(text))
+    section_matches = _find_section_heading_matches(text, section_headings)
     if section_matches:
         return _build_sections_from_matches(text, section_matches, "Section")
 
@@ -3597,8 +3628,7 @@ def split_text_into_sections(text: str, section_headings: Optional[Any] = None) 
 
 def split_text_into_book_sections(text: str, section_headings: Optional[Any] = None) -> Dict[str, Any]:
     """Return a flat section structure with legacy-compatible result keys."""
-    section_pattern = _build_section_heading_pattern(section_headings)
-    section_matches = list(section_pattern.finditer(text))
+    section_matches = _find_section_heading_matches(text, section_headings)
     if section_matches:
         sections = _build_sections_from_matches(text, section_matches, "Section")
         return {"kind": "section", "books": [], "sections": sections}
@@ -3608,7 +3638,15 @@ def split_text_into_book_sections(text: str, section_headings: Optional[Any] = N
     return {"kind": "none", "books": [], "sections": sections}
 
 
-def _resolve_llm_chunk_size(config: Dict[str, Any]) -> int:
+def _resolve_llm_chunk_size(config: Dict[str, Any], text: str = "") -> int:
+    novel = config.get("novel_settings") or {}
+    language = str(novel.get("language") or "auto").lower()
+    if language == "chinese" or (language == "auto" and contains_cjk(text)):
+        try:
+            size = int(novel.get("chunk_size") or 4000)
+        except (TypeError, ValueError):
+            size = 4000
+        return max(1000, min(12000, size))
     provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
     key = "llm_gemini_chunk_size" if provider == "gemini" else "llm_local_chunk_size"
     raw_value = config.get(key, 500)
@@ -3634,6 +3672,8 @@ def _chunk_text_by_paragraph_words(text: str, max_words: int) -> List[str]:
     except (TypeError, ValueError):
         max_words = 500
     max_words = max(50, max_words)
+    if contains_cjk(content):
+        return chunk_text_units(content, max_words)
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", content) if part.strip()]
     if not paragraphs:
         return [content]
@@ -3704,8 +3744,8 @@ def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, sectio
     if not text:
         return sections
 
-    llm_chunk_size = _resolve_llm_chunk_size(config)
-    llm_chunk_chapters = _resolve_llm_chunk_chapters(config)
+    llm_chunk_size = _resolve_llm_chunk_size(config, text)
+    llm_chunk_chapters = _resolve_llm_chunk_chapters(config) or contains_cjk(text)
 
     hierarchy = split_text_into_book_sections(text, section_headings) if prefer_chapters else None
     book_matches = (hierarchy or {}).get("books") or []
@@ -3787,11 +3827,26 @@ def build_gemini_sections(text: str, prefer_chapters: bool, config: dict, sectio
                 "source": "chunk"
             })
 
+    novel = config.get("novel_settings") or {}
+    language = str(novel.get("language") or "auto").lower()
+    chinese = language == "chinese" or (language == "auto" and contains_cjk(text))
+    try:
+        overlap = int(novel.get("context_overlap", 300 if chinese else 0))
+    except (TypeError, ValueError):
+        overlap = 300 if chinese else 0
+    overlap = max(0, min(2000, overlap))
+    previous_tail = ""
+    for section in sections:
+        section["context"] = previous_tail[-overlap:] if overlap else ""
+        previous_tail = (previous_tail + (section.get("content") or ""))[-2000:]
     return sections
 
 
-def compose_gemini_prompt(section: dict, prompt_prefix: str = "", known_speakers=None) -> str:
+def compose_gemini_prompt(section: dict, prompt_prefix: str = "", known_speakers=None,
+                          novel_settings=None, character_registry=None) -> str:
     """Build a section prompt for the configured LLM, with optional speaker memory."""
+    if is_chinese_novel(novel_settings, section.get('content') or ''):
+        return compose_novel_prompt(section, prompt_prefix, known_speakers, novel_settings, character_registry)
     parts = []
     if prompt_prefix:
         parts.append(prompt_prefix.strip())
@@ -4372,7 +4427,7 @@ def build_speaker_profile_excerpts(
     wanted = {str(speaker).strip().lower(): str(speaker).strip() for speaker in speakers if str(speaker).strip()}
     excerpts: Dict[str, List[str]] = {key: [] for key in wanted}
     lengths = {key: 0 for key in wanted}
-    pattern = re.compile(r"\[([a-zA-Z0-9_-]+)\](.*?)\[/\1\]", re.DOTALL)
+    pattern = re.compile(SPEAKER_BLOCK_PATTERN, re.DOTALL | re.IGNORECASE)
     for match in pattern.finditer(processed_text):
         key = match.group(1).strip().lower()
         if key not in wanted or lengths[key] >= max_chars_per_speaker:
@@ -4484,6 +4539,9 @@ def parse_gemini_speaker_table(text: str) -> Dict[str, Dict[str, str]]:
 def _voice_age_category(source: str) -> str:
     """Infer a conservative casting age category from explicit wording or an age."""
     text = (source or "").lower()
+    chinese_age = chinese_voice_age(text)
+    if chinese_age:
+        return chinese_age
     age_match = re.search(
         r"\b(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?\s*[- ]?\s*(?:years?|yrs?)(?:\s*[- ]\s*old)?\b",
         text,
@@ -4548,6 +4606,7 @@ def build_profile_voice_design_prompt(profile: Dict[str, Any]) -> str:
     voice_type = re.sub(r"\s+", " ", str(profile.get("voice") or "").strip())
     supplied = re.sub(r"\s+", " ", str(profile.get("voice_design_prompt") or "").strip())
     gender_source = f"{name} {voice_type} {supplied}".lower()
+    language = resolve_voice_language(profile)
 
     if re.search(r"\bfemale\b|\bwoman\b|\bgirl\b|\bsoprano\b|\balto\b", gender_source):
         gender = "female"
@@ -4556,9 +4615,9 @@ def build_profile_voice_design_prompt(profile: Dict[str, Any]) -> str:
     elif re.search(r"\bneutral\b|\bnonbinary\b|\bnon-binary\b", gender_source):
         gender = "neutral"
     else:
-        gender = "neutral"
+        gender = chinese_voice_gender(f"{voice_type} {supplied}") or "neutral"
 
-    gender_phrase = _voice_age_gender_prefix(gender, gender_source)
+    gender_phrase = _voice_age_gender_prefix(gender, supplied or gender_source)
 
     prompt = supplied or voice_type
     prompt = re.sub(
@@ -4592,8 +4651,8 @@ def build_profile_voice_design_prompt(profile: Dict[str, Any]) -> str:
     if not prompt:
         prompt = voice_type
     prompt = f"{gender_phrase}. {prompt}" if prompt else gender_phrase
-    if not re.search(r"\bEnglish\b|\baccent\b", prompt, re.IGNORECASE):
-        prompt = f"{prompt.rstrip('.')}. Neutral English accent."
+    if not re.search(r"\bEnglish\b|\baccent\b|\bMandarin\b|普通话", prompt, re.IGNORECASE):
+        prompt = f"{prompt.rstrip('.')}. {default_voice_accent(language)}."
     prompt = re.sub(r"\s+", " ", prompt).strip()
     if len(prompt) > 150:
         prompt = prompt[:150].rsplit(" ", 1)[0].rstrip(" ,;") + "."
@@ -5395,7 +5454,7 @@ def _process_audio_job(job_data):
                 r"^(chapter|book|part|section|letter)\b",
                 normalized,
                 flags=re.IGNORECASE,
-            )
+            ) or detect_heading(title)
             if title and not chapter_like:
                 folder_name = slugify_filename(title, "section").lower()
                 return base_dir / folder_name, chapter_folder_idx, False, folder_name
@@ -7587,7 +7646,7 @@ def _build_qwen_voice_design_instruction(payload: Dict[str, Any]) -> tuple[str, 
     if not structured:
         # Voice Manager supplies a complete manual instruction and remains supported.
         instruct = _clean_voice_design_instruction(payload.get("instruct") or "")
-        language = (payload.get("language") or "English").strip() or "English"
+        language = resolve_voice_language(payload)
         return instruct, language
 
     gender = (payload.get("gender") or "").strip().lower()
@@ -7625,21 +7684,12 @@ def _build_qwen_voice_design_instruction(payload: Dict[str, Any]) -> tuple[str, 
     instruct = _clean_voice_design_instruction(instruct)
     if not expected.search(instruct):
         raise ValueError(f'Final VoiceDesign instruction must contain "{gender_phrase}".')
-    return instruct, "English"
+    return instruct, resolve_voice_language(payload)
 
 
-def _ensure_voice_design_preview_length(text: str) -> str:
+def _ensure_voice_design_preview_length(text: str, language: str = "Auto") -> str:
     """Pad unusually short custom previews so casting samples demonstrate the voice."""
-    cleaned = re.sub(r"\s+", " ", (text or "").strip())
-    if not cleaned:
-        return cleaned
-    padding = (
-        "The speaker continues with clear articulation and natural pacing, moving from calm reflection "
-        "through firm conviction and rising urgency to demonstrate a believable emotional range for audiobook dialogue."
-    )
-    while len(cleaned.split()) < MIN_VOICE_DESIGN_PREVIEW_WORDS:
-        cleaned = f"{cleaned.rstrip()} {padding}"
-    return cleaned
+    return pad_voice_preview(text, language, minimum_words=MIN_VOICE_DESIGN_PREVIEW_WORDS)
 
 
 def _cleanup_qwen_voice_design_generation(*, force_cuda: bool = False) -> None:
@@ -7659,8 +7709,8 @@ def _cleanup_qwen_voice_design_generation(*, force_cuda: bool = False) -> None:
 
 
 def _generate_voice_design_preview(payload: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
-    text = _ensure_voice_design_preview_length(payload.get("text") or "")
     instruct, language = _build_qwen_voice_design_instruction(payload)
+    text = _ensure_voice_design_preview_length(payload.get("text") or "", language)
     if not text:
         raise ValueError("Text is required to generate a preview.")
 
@@ -7755,8 +7805,8 @@ def _generate_voice_design_preview(payload: Dict[str, Any], config: Dict[str, An
 
 def _generate_breeze_voice_design_preview(payload: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """Generate a reference-free Breeze casting sample in the persistent Breeze worker."""
-    text = _ensure_voice_design_preview_length(payload.get("text") or "")
     instruct, language = _build_qwen_voice_design_instruction(payload)
+    text = _ensure_voice_design_preview_length(payload.get("text") or "", language)
     if not text:
         raise ValueError("Text is required to generate a preview.")
     if str(language or "English").lower() not in {"english", "chinese", "auto"}:
@@ -7852,9 +7902,9 @@ def _generate_breeze_voice_design_preview(payload: Dict[str, Any], config: Dict[
 
 def _save_voice_design_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     name = (payload.get("name") or "").strip()
-    text = (payload.get("text") or "").strip()
+    text = (payload.get("preview_text") or payload.get("text") or "").strip()
     gender = (payload.get("gender") or "").strip() or None
-    language = (payload.get("language") or "English").strip() or "English"
+    language = resolve_voice_language({**payload, "text": text})
     description = (payload.get("description") or "").strip() or None
     audio_base64 = payload.get("audio_base64")
 
@@ -7905,6 +7955,7 @@ def _save_voice_design_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "language": language if language and language != "Auto" else None,
         "description": description,
         "voice_design": {
+            "speaker": payload.get("speaker"),
             "engine": (payload.get("engine") or "qwen3_voice_design").strip(),
             "instruction": (payload.get("instruction") or payload.get("instruct") or "").strip(),
             "preview_text": text,
@@ -10315,6 +10366,9 @@ def process_text_with_gemini():
             }), 400
 
         config = load_config()
+        config['novel_settings'] = normalize_novel_settings(data.get('novel_settings'), config)
+        if config['novel_settings']['language'] == 'auto' and is_chinese_novel(config['novel_settings'], text):
+            config['novel_settings']['language'] = 'Chinese'
         provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
         if provider == "gemini":
             api_key = (config.get('gemini_api_key') or '').strip()
@@ -10337,23 +10391,37 @@ def process_text_with_gemini():
         known_speakers = set(text_processor.extract_speakers(text))
         active_profile = None
 
+        profile_used = None
         processed_sections = []
         for idx, section in enumerate(sections, start=1):
             chapter_text = section.get('content', '').strip()
             if not chapter_text:
                 continue
 
+            if is_chinese_novel(config.get('novel_settings'), chapter_text):
+                heading_output = heading_only_source(section.get('content') or '')
+                if heading_output is not None:
+                    processed_sections.append({'index': idx, 'title': section.get('title'),
+                        'source': section.get('source'), 'output': heading_output, 'speakers': [],
+                        'llm_profile_used': None, 'llm_provider_used': None, 'provider_failures': []})
+                    continue
             combined_prompt = compose_gemini_prompt(
                 section,
                 prompt_prefix,
-                sorted(known_speakers)
+                sorted(known_speakers),
+                config.get('novel_settings'),
+                data.get('character_registry') or [],
             )
-            response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
-                combined_prompt,
-                config,
-                preferred_profile=active_profile,
-            )
-            active_profile = profile_used["id"]
+            if is_chinese_novel(config.get('novel_settings'), chapter_text):
+                recovered = _prepare_chinese_section(section, config, prompt_prefix,
+                    sorted(known_speakers), config.get('novel_settings'),
+                    data.get('character_registry') or [], active_profile)
+                response_text, profile_used, provider_failures = (
+                    recovered['result_text'], recovered['profile'], recovered['failures'])
+            else:
+                response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
+                    combined_prompt, config, preferred_profile=active_profile)
+            active_profile = profile_used["id"] if profile_used else active_profile
             detected_speakers = text_processor.extract_speakers(response_text)
             for speaker_name in detected_speakers:
                 known_speakers.add(speaker_name)
@@ -10361,10 +10429,10 @@ def process_text_with_gemini():
                 "index": idx,
                 "title": section.get('title'),
                 "source": section.get('source'),
-                "output": response_text.strip(),
+                "output": response_text if is_chinese_novel(config.get("novel_settings"), chapter_text) else response_text.strip(),
                 "speakers": detected_speakers,
                 "llm_profile_used": profile_used,
-                "llm_provider_used": profile_used["provider"],
+                "llm_provider_used": profile_used["provider"] if profile_used else None,
                 "provider_failures": provider_failures,
             })
 
@@ -10379,18 +10447,21 @@ def process_text_with_gemini():
             for section in processed_sections
             if section.get('output')
         ).strip()
+        if is_chinese_novel(config.get('novel_settings'), text):
+            final_text = join_novel_sections(data.get('text') or text, sections,
+                                             [section['output'] for section in processed_sections])
 
         return jsonify({
             "success": True,
             "result_text": final_text,
             "processed_sections": processed_sections,
             "llm_profile_used": profile_used,
-            "llm_provider_used": profile_used["provider"],
+            "llm_provider_used": profile_used["provider"] if profile_used else None,
             "chapter_mode": any(section.get('source') == 'chapter' for section in sections),
             "section_count": len(processed_sections)
         })
 
-    except (GeminiProcessorError, LocalLLMProcessorError, AtlasCloudProcessorError, OpenRouterProcessorError, LLMProviderChainError) as exc:
+    except (GeminiProcessorError, LocalLLMProcessorError, AtlasCloudProcessorError, OpenRouterProcessorError, LLMProviderChainError, ValueError) as exc:
         return jsonify({
             "success": False,
             "error": str(exc)
@@ -10418,6 +10489,8 @@ def process_full_text_with_gemini():
             }), 400
 
         config = load_config()
+        if is_chinese_novel(normalize_novel_settings(data.get('novel_settings'), config), text):
+            return process_text_with_gemini()
         provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
         if provider == "gemini":
             api_key = (config.get('gemini_api_key') or '').strip()
@@ -10486,14 +10559,17 @@ def process_gemini_speaker_profiles():
                     "success": False,
                     "error": "Gemini API key not configured"
                 }), 400
+        processed_text = (data.get('processed_text') or '').strip()
+        profile_language = resolve_voice_language(data)
         prompt_prefix = prompt_override or (config.get('gemini_speaker_profile_prompt') or '').strip()
+        if not prompt_prefix and profile_language == "Chinese":
+            prompt_prefix = CHINESE_SPEAKER_PROFILE_PROMPT
         if not prompt_prefix:
             return jsonify({
                 "success": False,
                 "error": "Speaker profile prompt not configured"
             }), 400
 
-        processed_text = (data.get('processed_text') or '').strip()
         profile_excerpts = build_speaker_profile_excerpts(processed_text, speakers)
         prompt = compose_gemini_speaker_profile_prompt(prompt_prefix, speakers, context, profile_excerpts)
         response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
@@ -10512,15 +10588,16 @@ def process_gemini_speaker_profiles():
         # table. Never report success with an empty Voice Design Prompt: preserve a
         # valid fourth column or build one from speaker gender + Voice Type only.
         for profile in profiles.values():
+            profile["voice_design_language"] = profile_language
             profile["voice_design_prompt"] = build_profile_voice_design_prompt(profile)
 
         normalized_profile_names = {
-            re.sub(r'[^a-z0-9]', '', str(profile.get("name") or key).lower())
+            re.sub(r'[\W_]', '', str(profile.get("name") or key).lower())
             for key, profile in profiles.items()
         }
         missing_speakers = []
         for speaker in speakers:
-            normalized = re.sub(r'[^a-z0-9]', '', speaker.lower())
+            normalized = re.sub(r'[\W_]', '', speaker.lower())
             without_gender = re.sub(r'(male|female|neutral)$', '', normalized)
             if not any(
                 candidate == normalized
@@ -10567,6 +10644,7 @@ def get_gemini_sections():
             }), 400
 
         config = load_config()
+        config['novel_settings'] = normalize_novel_settings(data.get('novel_settings'), config)
         sections = build_gemini_sections(text, prefer_chapters, config, section_headings)
 
         sanitized = []
@@ -10575,6 +10653,7 @@ def get_gemini_sections():
                 "id": idx,
                 "title": section.get('title'),
                 "content": section.get('content'),
+                "context": section.get('context') or '',
                 "source": section.get('source')
             })
 
@@ -10590,6 +10669,31 @@ def get_gemini_sections():
             "success": False,
             "error": "Failed to build LLM sections"
         }), 500
+
+
+def _prepare_chinese_section(section, config, prompt_prefix, known_speakers,
+                             novel_settings, character_registry, preferred_profile='',
+                             defer_transient_failover=False, prefer_source_locked=False, **structured_options):
+    from src.chinese_novel.preparation import prepare_chinese_novel, NovelPreparationError
+    active = preferred_profile
+    def generate(prompt):
+        nonlocal active
+        result = _run_llm_prompt_with_failover(prompt, config, preferred_profile=active,
+            defer_transient_failover=defer_transient_failover, **structured_options)
+        if result[1]:
+            active = result[1]['id']
+        return result
+    try:
+        prepared = prepare_chinese_novel(section.get('content') or '', generate=generate,
+            context=section.get('context') or '', novel_settings=novel_settings,
+            character_registry=character_registry, prompt_prefix=prompt_prefix,
+            known_speakers=known_speakers, span_recovery=True, prefer_source_locked=prefer_source_locked)
+    except NovelPreparationError as exc:
+        logger.warning('Chinese Prep output validation failed: %s; diagnostics=%s', exc, exc.diagnostics)
+        raise
+    if prepared['diagnostics']['recovered']:
+        logger.info('Chinese Prep recovered invalid model output: %s', prepared['diagnostics'])
+    return prepared
 
 
 @app.route('/api/gemini/process-section', methods=['POST'])
@@ -10616,6 +10720,17 @@ def process_gemini_section():
             }), 400
 
         config = load_config()
+        novel_settings = normalize_novel_settings(data.get('novel_settings'), config)
+        character_registry = data.get('character_registry') or []
+        if not isinstance(character_registry, list):
+            return jsonify({'success': False, 'error': 'character_registry must be an array'}), 400
+        chinese_novel = is_chinese_novel(novel_settings, content)
+        if chinese_novel and not data.get('directed_mode'):
+            content = data.get('content') or ''
+            heading_output = heading_only_source(content)
+            if heading_output is not None:
+                return jsonify({'success': True, 'result_text': heading_output, 'speakers': [],
+                                'llm_profile_used': None, 'llm_provider_used': None, 'provider_failures': []})
         provider = (config.get("llm_provider") or DEFAULT_LLM_PROVIDER).lower().strip()
         if provider == "gemini":
             api_key = (config.get('gemini_api_key') or '').strip()
@@ -10638,9 +10753,11 @@ def process_gemini_section():
 
         text_processor = TextProcessor()
         prompt = compose_gemini_prompt(
-            {"content": content},
+            {"content": content, "context": data.get('context') or ''},
             prompt_prefix,
-            known_speakers
+            known_speakers,
+            novel_settings,
+            character_registry,
         )
         locked = None
         if data.get('directed_mode'):
@@ -10650,13 +10767,20 @@ def process_gemini_section():
             structured_options = dict(response_schema=schema,
                                       response_schema_name='tts_story_directions',
                                       response_schema_strict=True)
-        response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
-            prompt,
-            config,
-            preferred_profile=preferred_profile,
-            defer_transient_failover=True,
-            **structured_options,
-        )
+        preparation_diagnostics = None
+        if chinese_novel and locked is None:
+            prepared = _prepare_chinese_section(
+                {'content': content, 'context': data.get('context') or ''}, config, prompt_prefix,
+                known_speakers, novel_settings, character_registry, preferred_profile,
+                defer_transient_failover=True, prefer_source_locked=data.get('source_locked_prep') is True,
+                **structured_options)
+            response_text, profile_used, provider_failures = (
+                prepared['result_text'], prepared['profile'], prepared['failures'])
+            preparation_diagnostics = prepared['diagnostics']
+        else:
+            response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
+                prompt, config, preferred_profile=preferred_profile,
+                defer_transient_failover=True, **structured_options)
         audit = None
         if locked is not None:
             response_text, audit = assemble_directed(locked, response_text)
@@ -10664,16 +10788,19 @@ def process_gemini_section():
 
         return jsonify({
             "success": True,
-            "result_text": response_text if locked is not None else response_text.strip(),
+            "result_text": response_text if locked is not None or chinese_novel else response_text.strip(),
             "speakers": detected_speakers,
             "llm_profile_used": profile_used,
-            "llm_provider_used": profile_used["provider"],
+            "llm_provider_used": profile_used["provider"] if profile_used else None,
             "provider_failures": provider_failures,
             **({"direction_audit": audit} if audit is not None else {}),
+            **({"preparation_diagnostics": preparation_diagnostics} if preparation_diagnostics is not None else {}),
         })
 
-    except StructuredOutputError as exc:
-        return jsonify({"success": False, "error": str(exc), "retryable": False}), 400
+    except (StructuredOutputError, ValueError) as exc:
+        logger.warning('LLM section rejected: %s', exc)
+        return jsonify({"success": False, "error": str(exc), "retryable": False,
+                        **({'preparation_diagnostics': exc.diagnostics} if hasattr(exc, 'diagnostics') else {})}), 400
     except (GeminiProcessorError, LocalLLMProcessorError, AtlasCloudProcessorError, OpenRouterProcessorError, LLMProviderChainError) as exc:
         err_str = str(exc)
         transient_markers = ("503", "UNAVAILABLE", "429", "quota", "rate limit", "rate_limit", "high demand", "try again")
@@ -10724,6 +10851,12 @@ def save_prep_progress():
             "sections": data.get('sections') or [],
             "outputs": data.get('outputs') or [],
             "known_speakers": data.get('known_speakers') or [],
+            "active_profile": data.get('active_profile') or '',
+            "prompt_override": str(data.get('prompt_override') or ''),
+            "last_failure": str(data.get('last_failure') or '')[:2000],
+            "source_locked_prep": data.get('source_locked_prep') is True,
+            "novel_settings": normalize_novel_settings(data.get('novel_settings')),
+            "character_registry": data.get('character_registry') or [],
             "timestamp": data.get('timestamp') or int(time.time() * 1000),
         }
         progress_file = PREP_PROGRESS_DIR / f"{text_hash}.json"
@@ -11010,29 +11143,15 @@ def download_audio(job_id):
                     "success": False,
                     "error": "Invalid file path"
                 }), 400
-            candidate_path = job_dir / safe_relative
-            if candidate_path.exists():
+            candidate_path = safe_audio_path(job_dir, requested_file)
+            if candidate_path:
                 file_path = candidate_path
                 output_format = candidate_path.suffix.lstrip('.')
 
         if file_path is None:
-            metadata = load_job_metadata(job_dir)
-            full_story = (metadata or {}).get("full_story") if metadata else None
-            if full_story:
-                rel_path = full_story.get("relative_path") or full_story.get("output_file")
-                if rel_path:
-                    candidate = job_dir / Path(rel_path)
-                    if candidate.exists():
-                        file_path = candidate
-                        output_format = candidate.suffix.lstrip('.')
-
-        if file_path is None:
-            for ext in [output_format, 'mp3', 'wav', 'ogg']:
-                test_path = job_dir / f"output.{ext}"
-                if test_path.exists():
-                    file_path = test_path
-                    output_format = ext
-                    break
+            file_path = resolve_full_story_download(job_dir, load_job_metadata(job_dir), output_format)
+            if file_path:
+                output_format = file_path.suffix.lstrip('.')
 
         if not file_path or not file_path.exists():
             logger.error(f"File not found for job {job_id} in {job_dir}")
