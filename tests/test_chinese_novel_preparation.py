@@ -43,6 +43,23 @@ def test_one_correction_retry_recovers_source_without_accepting_rewrite():
     assert result['diagnostics']['retries'] == 1
 
 
+def test_default_role_is_reidentified_instead_of_silently_becoming_narrator():
+    calls = []
+    def generate(prompt):
+        calls.append(prompt)
+        speaker = 'default' if len(calls) == 1 else '裴语涵'
+        return marked(body_from_prompt(prompt), speaker), PROFILE, []
+    result = prepare_chinese_novel('“站住。”', generate=generate, known_speakers=['default', '裴语涵'])
+    assert result['result_text'] == '[裴语涵]“站住。”[/裴语涵]'
+    assert result['diagnostics']['retries'] == 1
+    assert '适用时精确复用：default' not in calls[0]
+
+
+def test_persistent_default_role_fails_with_saved_progress_and_no_narrator_fallback():
+    with pytest.raises(NovelPreparationError):
+        prepare_chinese_novel('“站住。”', generate=lambda prompt: (marked(body_from_prompt(prompt), 'default'), PROFILE, []))
+
+
 def test_adaptive_split_preserves_exact_source_and_shares_speaker_context():
     source = '甲' * 600 + '\r\n\n' + '乙' * 600
     calls = []

@@ -10,7 +10,7 @@ from .prompts import (
     compose_novel_prompt, heading_only_source, join_novel_sections,
     normalize_novel_settings, preserve_source_markup,
 )
-from .speaker_ids import SPEAKER_NAME_PATTERN
+from .speaker_ids import SPEAKER_NAME_PATTERN, UNASSIGNED_SPEAKER_ID
 from .text_units import chunk_text_units, count_text_units
 
 
@@ -24,7 +24,7 @@ class NovelPreparationError(ValueError):
 def _validate_configuration(settings, registry):
     def valid(name):
         return (isinstance(name, str) and bool(re.fullmatch(SPEAKER_NAME_PATTERN, name))
-                and name.casefold() not in CONTROL_TAGS)
+                and name.casefold() not in CONTROL_TAGS | {UNASSIGNED_SPEAKER_ID})
     if settings['narrative_mode'] == 'first_person' and settings['first_person_protagonist']:
         if not valid(settings['first_person_protagonist']):
             raise ValueError('Chinese Novel first-person protagonist must be a valid speaker ID')
@@ -71,7 +71,8 @@ def prepare_chinese_novel(content, *, generate, context='', novel_settings=None,
     min_units = max(1, int(min_units))
     max_calls = max(1, int(max_calls))
     correction_attempts = max(0, min(2, int(correction_attempts)))
-    speakers = list(dict.fromkeys(str(name) for name in (known_speakers or []) if name))
+    speakers = list(dict.fromkeys(str(name) for name in (known_speakers or [])
+                                if name and str(name).casefold() != UNASSIGNED_SPEAKER_ID))
     failures, last_profile = [], None
     diagnostics = {'calls': 0, 'retries': 0, 'splits': 0, 'accepted_parts': 0,
                    'recovered': False, 'errors': [], 'source_locked_parts': 0}

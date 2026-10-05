@@ -160,3 +160,29 @@ mixed-language source protection and saved strategy/error/prompt restoration.
 Repository safety and whitespace checks passed. Speaker attribution across an
 arbitrary novel still requires editorial review; exact source retention does
 not establish semantic attribution or speech quality.
+
+### Paragraph formatting and unassigned-role regression (2026-10-06)
+
+Validated output now combines consecutive same-speaker blocks without crossing
+direction/emotion changes, retains every source paragraph break, and displays
+leading paragraph whitespace before the next opening speaker tag. Literal
+expression cues retain their exact source whitespace.
+
+The earlier long-novel validation checked source retention and markup integrity,
+but accepted 21 `default` role labels across sections 26, 28, 33 and 47. This was
+a semantic validation gap: `default` is an unassigned voice placeholder, not an
+identified novel character. Chinese Prep now rejects it in both tagged output
+and role-only JSON, requests a corrected attribution, and never silently maps
+it to narration. Persistent failure retains the existing bounded recovery/error
+behavior. Known speaker memory excludes this placeholder.
+
+The user-provided Pei Yuhan dialogue is now a dedicated real-model fixture.
+Its nine dialogue owners are checked, including four Pei Yuhan lines and the
+continued pronoun attribution. The confirmed character registry normalizes the
+middle-aged man's descriptive aliases. Source-locked Directed Prep and Profile
+routes passed against the existing remote text model with exact source retention.
+The full 49-section semantic review has not been repeated; this fixture does
+not establish general speaker-attribution accuracy for the entire novel.
+
+The targeted Python regression passed 203 tests, covering preparation, speaker
+parsing, directions, chapter splitting, text units, resume and voice-design paths.

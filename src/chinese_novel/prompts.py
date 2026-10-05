@@ -61,6 +61,8 @@ CHINESE_NOVEL_PROMPT = '''你是中文长篇小说有声书的标注员。仅添
 每段叙述用 [旁白]原文[/旁白]，对白用 [角色全名]原文[/角色全名]。
 必须按说话归属切分段落内的叙述和对白，而不是把整段分给一个 speaker。
 角色名字出现或“她说”“他指着”这类动作归属不代表该角色在朗读叙述。
+“某人说道/问道/冷笑道”后紧接的对白归该说话人；连续交谈中的“她/他”须结合前后文追踪角色。
+default 是程序未分配声线的占位符，不是角色，禁止生成 [default]。明确姓名用姓名，身份未明时用原文可确认的身份称谓。
 引号内对白的 speaker 依据说话动作、称呼和上下文确定；对“叶兄”的称呼通常说明说话者不是叶兄。
 同一段中他人的对白必须单独标注，绝对不能包进主角或旁白的 speaker block。
 第三人称例：原文 林清雪站在窗边，她轻声说：“叶兄，你总算回来了。”
@@ -152,7 +154,7 @@ def compose_novel_prompt(section, prompt_prefix='', known_speakers=None, novel_s
 def preserve_source_markup(source, response, novel_settings=None, character_registry=None):
     """Reject changed prose, then restore source whitespace around added markup."""
     from src.tag_validation import TAG, tag_errors, CONTROL_TAGS, EXPRESSION_TAGS
-    from .speaker_ids import SPEAKER_NAME_PATTERN
+    from .speaker_ids import SPEAKER_NAME_PATTERN, UNASSIGNED_SPEAKER_ID
     settings = normalize_novel_settings(novel_settings)
     prefix, body = _heading_prefix(source)
     response = response.strip()
@@ -190,6 +192,9 @@ def preserve_source_markup(source, response, novel_settings=None, character_regi
             if name.casefold() in CONTROL_TAGS:
                 raise ValueError('Chinese Novel control block is invalid')
             canonical = aliases.get(name.casefold(), name)
+            if canonical.casefold() == UNASSIGNED_SPEAKER_ID:
+                raise ValueError('Chinese Novel speaker ID default is an unassigned voice placeholder; '
+                                 'identify the actual speaker from source context')
             if (not re.fullmatch(SPEAKER_NAME_PATTERN, canonical)
                     or canonical.casefold() in CONTROL_TAGS):
                 raise ValueError('Chinese Novel canonical speaker ID is invalid: ' + canonical)
@@ -215,6 +220,18 @@ def preserve_source_markup(source, response, novel_settings=None, character_regi
                          f'at source offset {len(prefix) + cursor} of {len(source)}')
     rendered.append(body[cursor:])
     result = ''.join(rendered)
+    # Source spans are deliberately small for role attribution. Once validated,
+    # consecutive spans with the same voice can share one speaker block. Keep
+    # all source whitespace and never cross a direction/emotion control block.
+    result = re.sub(r'\[/([^\[\]\r\n]+)\](\s*)\[\1\]',
+                    lambda match: match.group(0) if match[1].casefold() in CONTROL_TAGS
+                    else match[2], result)
+    # At a voice change, keep the original paragraph break before the opening
+    # tag instead of leaving an otherwise empty-looking tag on the previous line.
+    result = re.sub(r'(\[([^\[\]\r\n/]+)\])(\s+)',
+                    lambda match: match.group(0) if (match[2].casefold() in CONTROL_TAGS
+                        or match[2].casefold() not in closed_names)
+                    else match[3] + match[1], result)
     final_errors = tag_errors(result)
     if final_errors:
         raise ValueError('Chinese Novel canonical speaker markup is invalid: ' + final_errors[0])

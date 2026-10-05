@@ -54,6 +54,11 @@ def main():
         novel.update(narrative_mode='first_person', first_person_protagonist=args.protagonist)
     prompt = next(entry['prompt'] for entry in with_chinese_novel_presets([]) if entry['id'] == args.preset)
     registry = [{'display_name': '叶临渊', 'aliases': ['临渊', '叶兄', '叶公子']}]
+    if args.input.name == 'chinese_speaker_attribution.txt':
+        registry.extend([
+            {'display_name': '裴语涵', 'aliases': ['裴仙子']},
+            {'display_name': '中年男子', 'aliases': ['中年道人', '阴阳阁道人', '道人']},
+        ])
     sections = post('/api/gemini/sections', {
         'text': source, 'prefer_chapters': True, 'novel_settings': novel,
         'section_headings': ['chapter', '第*章'],
@@ -88,6 +93,15 @@ def main():
     elif args.input.name == 'chinese_novel_smoke.txt':
         assert all(segment['speaker'] == '叶临渊' for segment in segments
                    if '“临渊羡鱼' in segment['text'] or '“终于出来了。”' in segment['text'])
+    elif args.input.name == 'chinese_speaker_attribution.txt':
+        # This regression originally emitted default for every Pei Yuhan line.
+        expected = ['裴语涵', '中年男子', '裴语涵', '中年男子', '裴语涵',
+                    '中年男子', '中年男子', '叶临渊', '裴语涵']
+        dialogue = re.findall('“[^”]*”', source)
+        assert len(dialogue) == len(expected)
+        for quote, speaker in zip(dialogue, expected):
+            owners = [segment['speaker'] for segment in segments if quote in segment['text']]
+            assert owners == [speaker], f'Wrong dialogue owner: expected {speaker}, got {owners}'
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'prepared.txt').write_text(prepared, encoding='utf-8')
     profile_payload = post('/api/gemini/speaker-profiles', {

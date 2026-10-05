@@ -10,7 +10,7 @@ from .prompts import (
     _heading_prefix, normalize_novel_settings, preserve_source_markup,
     CHINESE_NOVEL_PROMPT, DIRECTED_RULES, FIRST_PERSON_RULES,
 )
-from .speaker_ids import SPEAKER_NAME_PATTERN
+from .speaker_ids import SPEAKER_NAME_PATTERN, UNASSIGNED_SPEAKER_ID
 
 
 class SpanAnnotationError(ValueError):
@@ -88,7 +88,7 @@ def split_source_spans(source, context=''):
 
 def _valid_speaker(name):
     return (isinstance(name, str) and bool(re.fullmatch(SPEAKER_NAME_PATTERN, name))
-            and name.casefold() not in CONTROL_TAGS)
+            and name.casefold() not in CONTROL_TAGS | {UNASSIGNED_SPEAKER_ID})
 
 
 def _aliases(settings, registry):
@@ -120,6 +120,8 @@ def _prompt(spans, context, settings, registry, known_speakers, directed, correc
 {"annotations":[{"id":0,"speaker":"旁白"},{"id":1,"speaker":"角色全名"}]}
 每个编号必须恰好出现一次，严格按输入编号顺序。只包含 id、speaker 和允许的可选 direction 字段。
 根据全文视角、说话动作、上下文、称呼判断真实说话者。不可机械把全部段落归给旁白或同一个角色。
+“某人说道/问道/冷笑道”后紧接的对白归该说话人；对话中的“她/他”须结合前后文追踪，不能丢失已明确的说话人。
+default 是程序未分配声线的占位符，不是角色，禁止用作 speaker。明确姓名用姓名，身份未明时用原文可确认的身份称谓。
 narration 是叙述、动作或人物描述，第三人称时由旁白朗读；动作主语不是该叙述的 speaker。
 dialogue 是直接引号文本，按说话人使用全名。对“叶兄”的称呼说明说话者通常不是叶兄。
 引号内的内心独白或引用也须结合上下文判断；连续被换行拆开的对白通常沿用同一个人物。

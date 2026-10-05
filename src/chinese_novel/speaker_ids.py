@@ -11,6 +11,7 @@ from bisect import bisect_right
 SPEAKER_NAME_PATTERN = r'[^\W\d_][\w-]*'
 SPEAKER_BLOCK_PATTERN = rf'\[({SPEAKER_NAME_PATTERN})\](.*?)\[/\1\]'
 TAG_PATTERN = rf'\[(/?)({SPEAKER_NAME_PATTERN})\]'
+UNASSIGNED_SPEAKER_ID = 'default'
 
 
 class SpeakerBlockSlices:

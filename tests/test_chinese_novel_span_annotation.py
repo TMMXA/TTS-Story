@@ -37,6 +37,14 @@ def test_quote_span_is_separate_from_surrounding_narration():
         ('她说：', 'narration'), ('“你好「叶兄」。”', 'dialogue'), ('我点头。', 'narration')]
 
 
+def test_locked_spans_render_consecutive_narration_as_one_speaker_block():
+    source = '开篇。\r\n\r\n下一段。\n最后一段。'
+    result = annotate_source_spans(source, generate=lambda prompt:
+        (annotations(spans_from_prompt(prompt)), PROFILE, []))
+    assert result['diagnostics']['span_count'] == 3
+    assert result['result_text'] == '[旁白]' + source + '[/旁白]'
+
+
 def test_first_person_role_annotations_preserve_heading_prose_and_other_dialogue():
     source = '第一章 山雨\r\n我看见林清雪，她说：“叶兄，你回来了。”\n我点头。\n'
     def generate(prompt):
@@ -58,6 +66,7 @@ def test_first_person_role_annotations_preserve_heading_prose_and_other_dialogue
     {'annotations': [{'id': 1, 'speaker': '旁白'}, {'id': 0, 'speaker': '旁白'}]},
     {'annotations': [{'id': 0, 'speaker': '[旁白]'}]},
     {'annotations': [{'id': 0, 'speaker': 'direction'}]},
+    {'annotations': [{'id': 0, 'speaker': 'default'}, {'id': 1, 'speaker': 'default'}]},
     {'annotations': [{'id': 0, 'speaker': '旁白', 'text': '改写'}]},
     {'annotations': [{'id': 0, 'speaker': '旁白', 'direction': '偷偷添加正文。'}]},
 ])
@@ -77,6 +86,21 @@ def test_invalid_json_gets_one_retry_with_json_contract():
     assert re.sub(r'\[/?旁白\]', '', result['result_text']) == '原文。'
     assert '只返回 JSON' in calls[0]
     assert '只返回当前原文的标注结果' not in calls[0]
+
+
+def test_default_placeholder_retries_role_annotations_without_changing_prose():
+    source = '裴语涵说道：“站住。”'
+    calls = []
+    def generate(prompt):
+        calls.append(prompt)
+        spans = spans_from_prompt(prompt)
+        result = {'annotations': [{'id': span['id'], 'speaker': '旁白' if span['kind'] == 'narration'
+                    else ('default' if len(calls) == 1 else '裴语涵')} for span in spans]}
+        return json.dumps(result, ensure_ascii=False), PROFILE, []
+    result = annotate_source_spans(source, generate=generate)
+    assert result['result_text'] == '[旁白]裴语涵说道：[/旁白][裴语涵]“站住。”[/裴语涵]'
+    assert result['diagnostics']['retries'] == 1
+    assert '禁止用作 speaker' in calls[0]
 
 
 def test_direction_is_optional_metadata_only_in_directed_preset():

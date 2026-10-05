@@ -42,7 +42,7 @@ def test_guard_restores_original_spacing_and_keeps_direction_separate():
     result = preserve_source_markup(source,
         '[叶临渊]我推开门。[/叶临渊]\n[direction]轻声而克制。[/direction]\n[叶临渊]“你来了。”[/叶临渊]',
         {'language': 'Chinese'})
-    assert result == '[叶临渊]我推开门。[/叶临渊][direction]轻声而克制。[/direction][叶临渊]\n\n“你来了。”[/叶临渊]'
+    assert result == '[叶临渊]我推开门。[/叶临渊][direction]轻声而克制。[/direction]\n\n[叶临渊]“你来了。”[/叶临渊]'
 
 
 @pytest.mark.parametrize('response', [
@@ -64,7 +64,7 @@ def test_heading_is_excluded_from_prompt_and_reattached_exactly():
     prompt = compose_novel_prompt({'content': source}, novel_settings={'language': 'Chinese'})
     assert '第１２章' not in prompt
     assert preserve_source_markup(source, '[旁白]我推开门。[/旁白]', {'language': 'Chinese'}) == (
-        '第１２章：风雪\r\n[旁白]\r\n我推开门。[/旁白]')
+        '第１２章：风雪\r\n\r\n[旁白]我推开门。[/旁白]')
 
 
 def test_inserted_expression_is_not_silently_erased():
@@ -77,7 +77,62 @@ def test_alias_and_first_person_tags_use_one_voice():
         '[旁白]我推开门。[/旁白][叶兄]你好。[/叶兄]',
         {'language': 'Chinese', 'narrative_mode': 'first_person', 'first_person_protagonist': '叶临渊'},
         [{'display_name': '叶临渊', 'aliases': ['叶兄']}])
-    assert result == '[叶临渊]我推开门。[/叶临渊][叶临渊]你好。[/叶临渊]'
+    assert result == '[叶临渊]我推开门。你好。[/叶临渊]'
+
+
+def test_consecutive_narration_shares_one_block_without_changing_paragraphs():
+    source = '开篇。\r\n\r\n下一段。\n最后一段。\n'
+    response = '[旁白]开篇。[/旁白][旁白]下一段。[/旁白][旁白]最后一段。[/旁白]'
+    assert preserve_source_markup(source, response) == '[旁白]' + source.rstrip('\n') + '[/旁白]\n'
+
+
+def test_compaction_keeps_direction_scope_and_role_changes_for_tts():
+    from src.text_processor import TextProcessor
+    source = '他醒来。\n他叹气：“你好。”\n他推门。\n他走远。'
+    response = ('[旁白]他醒来。[/旁白][旁白]他叹气：[/旁白]'
+                '[direction]低沉、克制。[/direction][叶临渊]“你好。”[/叶临渊]'
+                '[旁白]他推门。[/旁白][旁白]他走远。[/旁白]')
+    result = preserve_source_markup(source, response)
+    segments = TextProcessor().parse_speaker_segments(result)
+    assert [segment['speaker'] for segment in segments] == ['旁白', '叶临渊', '旁白']
+    assert segments[1]['delivery_instruction'] == '低沉、克制。'
+    assert all('delivery_instruction' not in segment for segment in (segments[0], segments[2]))
+    assert segments[0]['text'] == '他醒来。\n他叹气：'
+    assert segments[2]['text'] == '他推门。\n他走远。'
+    assert '[/叶临渊]\n[旁白]他推门。' in result
+
+
+def test_leading_source_whitespace_stays_before_opening_speaker_tag():
+    source = '\r\n  原文。\n'
+    assert preserve_source_markup(source, '[旁白]原文。[/旁白]') == '\r\n  [旁白]原文。[/旁白]\n'
+
+
+def test_formatting_preserves_literal_expression_cues_and_their_whitespace():
+    source = '原文[sigh]\n 下一句。'
+    assert preserve_source_markup(source, '[旁白]' + source + '[/旁白]') == '[旁白]' + source + '[/旁白]'
+
+
+@pytest.mark.parametrize('control', ['direction', 'emotion'])
+def test_same_speaker_compaction_does_not_cross_delivery_changes(control):
+    response = f'[旁白]第一段。[/旁白][{control}]低沉。[/{control}][旁白]第二段。[/旁白]'
+    assert preserve_source_markup('第一段。第二段。', response) == response
+
+
+def test_dangling_narrator_tag_is_rejected_instead_of_compacted_away():
+    with pytest.raises(ValueError, match='no matching closing tag'):
+        preserve_source_markup('原文。', '[旁白]原文。[/旁白][旁白]')
+
+
+@pytest.mark.parametrize('name', ['default', 'Default', 'DEFAULT'])
+def test_default_voice_placeholder_is_not_an_accepted_novel_role(name):
+    with pytest.raises(ValueError, match='unassigned voice placeholder'):
+        preserve_source_markup('“站住。”', f'[{name}]“站住。”[/{name}]')
+
+
+def test_alias_cannot_canonicalize_a_role_to_default_placeholder():
+    with pytest.raises(ValueError, match='unassigned voice placeholder'):
+        preserve_source_markup('“站住。”', '[裴语涵]“站住。”[/裴语涵]',
+                               character_registry=[{'display_name': 'default', 'aliases': ['裴语涵']}])
 
 
 @pytest.mark.parametrize('canonical', ['叶 临渊', '[叶临渊]', 'direction', 'emotion', '123'])
