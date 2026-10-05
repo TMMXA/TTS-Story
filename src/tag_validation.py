@@ -1,5 +1,6 @@
 """Recognize incomplete speaker markup without confusing expression cues with speakers."""
 import re
+from src.chinese_novel.speaker_ids import TAG_PATTERN
 
 CONTROL_TAGS = {'direction', 'emotion'}
 EXPRESSION_TAGS = {
@@ -10,7 +11,7 @@ EXPRESSION_TAGS = {
     'question-yi', 'surprise-ah', 'surprise-oh', 'surprise-wa', 'surprise-yo',
     'dissatisfaction-hnn',
 }
-TAG = re.compile(r'\[(/?)([a-zA-Z][a-zA-Z0-9_\-]*)\]')
+TAG = re.compile(TAG_PATTERN)
 
 
 def structural_tags(text):

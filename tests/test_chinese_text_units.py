@@ -71,3 +71,11 @@ def test_cjk_character_strategy_never_overflows_to_a_distant_sentence_end():
     chunks = processor.chunk_text(source)
     assert all(len(chunk) <= 500 for chunk in chunks)
     assert ''.join(chunks) == source
+
+
+def test_heading_before_a_long_unbroken_paragraph_stays_with_body():
+    source = '第一章 山雨\n\n' + '文' * 9000
+    chunks = chunk_text_units(source, 4000)
+    assert chunks[0].startswith('第一章 山雨\n\n文')
+    assert count_text_units(chunks[0]) == 4000
+    assert ''.join(chunks) == source

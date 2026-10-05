@@ -2028,6 +2028,7 @@ function applySettings(settings) {
     }
     setElementValue('gemini-prompt', settings.gemini_prompt || '');
     setElementValue('gemini-speaker-profile-prompt', settings.gemini_speaker_profile_prompt || '');
+    applyChineseNovelSettings(settings.novel_settings || {});
     setGeminiPresetState(settings.gemini_prompt_presets || []);
 
     // Local LLM settings
@@ -2669,6 +2670,7 @@ async function saveSettings() {
         gemini_model: document.getElementById('gemini-model').value,
         gemini_prompt: document.getElementById('gemini-prompt').value,
         gemini_speaker_profile_prompt: document.getElementById('gemini-speaker-profile-prompt')?.value || '',
+        novel_settings: getChineseNovelSettings(),
         gemini_prompt_presets: geminiPresetState.list.map(preset => ({ ...preset })),
         llm_provider: document.getElementById('llm-provider')?.value || 'gemini',
         llm_backup_profiles: llmBackupProfiles.map(profile => ({ ...profile })),

@@ -20,4 +20,5 @@ def with_directed_presets(presets):
         if preset_id not in ids:
             result.append({"id": preset_id, "title": title,
                            "prompt": (PROMPT_DIR / filename).read_text(encoding="utf-8").strip()})
-    return result
+    from src.chinese_novel.prompts import with_chinese_novel_presets
+    return with_chinese_novel_presets(result)

@@ -124,6 +124,26 @@
                     </div>
                 </div>
 
+                <details class="settings-subsection" style="margin:12px 0;">
+                    <summary>Chinese Novel · 中文小说设置</summary>
+                    <div class="settings-form-grid" style="margin-top:12px;">
+                        <div class="form-group"><label for="novel-language">小说语言 / Language</label>
+                            <select id="novel-language"><option value="auto">Auto</option><option>English</option><option>Chinese</option><option>Japanese</option><option>Korean</option></select></div>
+                        <div class="form-group"><label for="novel-chunk-size">LLM chunk size (CJK 字符 + 非 CJK 词)</label>
+                            <input id="novel-chunk-size" type="number" min="1000" max="12000" step="100" value="4000"></div>
+                        <div class="form-group"><label for="novel-context-overlap">前文上下文字符 / Context overlap</label>
+                            <input id="novel-context-overlap" type="number" min="0" max="2000" step="50" value="300">
+                            <small>只帮助角色归属，不重复输出前文。</small></div>
+                        <div class="form-group"><label for="novel-narrative-mode">叙述视角 / Narrative mode</label>
+                            <select id="novel-narrative-mode"><option value="auto">Auto</option><option value="third_person">Third person / 第三人称</option><option value="first_person">First person / 第一人称</option></select></div>
+                        <div class="form-group"><label for="novel-first-person-protagonist">第一人称主角 / Protagonist</label>
+                            <input id="novel-first-person-protagonist" type="text" placeholder="叶临渊">
+                            <small>第一人称模式下，主角叙述与对白使用同一声线。</small></div>
+                    </div>
+                    <div class="form-group"><label for="novel-character-registry">已确认人物与别名 / Character aliases (optional JSON)</label>
+                        <textarea id="novel-character-registry" rows="3" placeholder='[{"display_name":"叶临渊","aliases":["临渊","叶兄","叶公子"]}]'></textarea>
+                        <small>这些设置随 Project 保存，后续章节继续复用相同角色标签。</small></div>
+                </details>
                 <div class="paralinguistic-tags-bar" id="paralinguistic-tags-bar">
                     <span class="tags-label">
                         Insert paralinguistic tag:
@@ -2120,7 +2140,7 @@
                                 <small>Create up to 100 ordered backups. Each profile can use its own provider, model, and API key.</small>
                             </div>
                             <div class="form-group" id="llm-gemini-chunk-group">
-                                <label for="llm-gemini-chunk-size">Gemini chunk size (words)</label>
+                                <label for="llm-gemini-chunk-size">Gemini chunk size (text units)</label>
                                 <input type="number" id="llm-gemini-chunk-size" min="50" max="5000" step="50" value="500">
                                 <small>Applies when Gemini is the prep provider.</small>
                             </div>
@@ -2132,7 +2152,7 @@
                                 <small>Disable to process full chapters in one request.</small>
                             </div>
                             <div class="form-group" id="llm-local-chunk-group">
-                                <label for="llm-local-chunk-size">Cloud / local LLM chunk size (words)</label>
+                                <label for="llm-local-chunk-size">Cloud / local LLM chunk size (text units)</label>
                                 <input type="number" id="llm-local-chunk-size" min="50" max="5000" step="50" value="500">
                                 <small>Applies when Atlas Cloud, OpenRouter, LM Studio, or Ollama is the prep provider.</small>
                             </div>
@@ -2880,11 +2900,12 @@
 
     <script src="/static/js/help.js?v=3"></script>
     <script src="/static/js/localai-models.js?v=1"></script>
-    <script src="/static/js/main.js?v=77"></script>
+    <script src="/static/js/novel-settings.js?v=1"></script>
+    <script src="/static/js/main.js?v=78"></script>
     <script src="/static/js/breeze-api.js?v=4"></script>
     <script src="/static/js/queue.js?v=8"></script>
-<script src="/static/js/library.js?v=53"></script>
-    <script src="/static/js/voice-manager.js?v=18"></script>
-<script src="/static/js/settings.js?v=35"></script>
+<script src="/static/js/library.js?v=54"></script>
+    <script src="/static/js/voice-manager.js?v=19"></script>
+<script src="/static/js/settings.js?v=36"></script>
 </body>
 </html>

@@ -194,9 +194,8 @@ def test_backend_full_assembly_preserves_mixed_newlines_and_chunk_boundaries(mon
     source = ' \r\n第一章 山雨\r\n' + '文' * 2100 + '\n\n\n第二章 故人\n正文。 \n'
     sections = app_module.build_gemini_sections(source.strip(), True, {'novel_settings': {'language': 'Chinese', 'chunk_size': 1000}})
     replies = []
+    from src.chinese_novel.prompts import _heading_prefix
     for section in sections:
-        heading, body = app_module.compose_novel_prompt.__globals__['_heading_prefix'](section['content']) if False else ('', '')
-        from src.chinese_novel.prompts import _heading_prefix
         _, body = _heading_prefix(section['content'])
         replies.append('[旁白]' + body + '[/旁白]')
     replies = iter(replies)
@@ -204,4 +203,29 @@ def test_backend_full_assembly_preserves_mixed_newlines_and_chunk_boundaries(mon
     response = app_module.app.test_client().post('/api/gemini/process', json={
         'text': source, 'novel_settings': {'language': 'Chinese', 'chunk_size': 1000}})
     assert response.status_code == 200
+    assert re.sub(r'\[/?旁白\]', '', response.json['result_text']) == source
+
+
+@pytest.mark.parametrize('endpoint,key', [('/api/gemini/process-section', 'content'), ('/api/gemini/process', 'text')])
+def test_heading_only_sections_are_preserved_without_model_calls(monkeypatch, endpoint, key):
+    import app as app_module
+    monkeypatch.setattr(app_module, 'load_config', lambda: {'llm_provider': 'local'})
+    monkeypatch.setattr(app_module, '_run_llm_prompt_with_failover', lambda *args, **kwargs: pytest.fail('Heading-only input must not call model'))
+    source = '第一章 山雨\r\n'
+    if key == 'text':
+        monkeypatch.setattr(app_module, 'build_gemini_sections', lambda *args: [{'content': source, 'title': '第一章 山雨', 'source': 'section'}])
+    response = app_module.app.test_client().post(endpoint, json={key: source, 'novel_settings': {'language': 'Chinese'}})
+    assert response.status_code == 200
+    assert response.json['result_text'] == source
+    assert response.json['llm_profile_used'] is None
+
+
+def test_section_endpoint_keeps_source_trailing_separator(monkeypatch):
+    import re
+    import app as app_module
+    monkeypatch.setattr(app_module, 'load_config', lambda: {'llm_provider': 'local'})
+    profile = {'id': 'primary', 'provider': 'local', 'name': 'test', 'model': 'test'}
+    monkeypatch.setattr(app_module, '_run_llm_prompt_with_failover', lambda *args, **kwargs: ('[旁白]正文。[/旁白]', profile, []))
+    source = '正文。\r\n\n'
+    response = app_module.app.test_client().post('/api/gemini/process-section', json={'content': source, 'novel_settings': {'language': 'Chinese'}})
     assert re.sub(r'\[/?旁白\]', '', response.json['result_text']) == source

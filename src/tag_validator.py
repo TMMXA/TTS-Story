@@ -8,6 +8,8 @@ in the output from local LLMs.
 import re
 from typing import List, Tuple, Optional, Dict
 from difflib import SequenceMatcher
+from src.chinese_novel.speaker_ids import normalize_speaker_id
+from src.tag_validation import structural_tags, tag_errors
 
 
 def validate_and_fix_tags(text: str) -> Tuple[str, List[Dict]]:
@@ -20,74 +22,27 @@ def validate_and_fix_tags(text: str) -> Tuple[str, List[Dict]]:
     Returns:
         Tuple of (fixed_text, list of corrections made)
     """
-    corrections = []
-    
-    # Find all opening and closing tags
-    opening_tags = list(re.finditer(r'\[([a-zA-Z0-9_\-]+)\]([^[]*)', text))
-    closing_tags = list(re.finditer(r'\[/([a-zA-Z0-9_\-]+)\]', text))
-    
-    # Build list of tag positions and types
-    tag_positions = []
-    for match in opening_tags:
-        tag_positions.append({
-            'type': 'open',
-            'name': match.group(1),
-            'start': match.start(),
-            'end': match.end(),
-            'content_start': match.end()
-        })
-    for match in closing_tags:
-        tag_positions.append({
-            'type': 'close',
-            'name': match.group(1),
-            'start': match.start(),
-            'end': match.end()
-        })
-    
-    # Sort by position
-    tag_positions.sort(key=lambda x: x['start'])
-    
-    # Validate tag pairs
-    stack = []  # Stack of (tag_name, position)
-    fixed_segments = []
-    last_end = 0
-    
-    for tag in tag_positions:
-        if tag['type'] == 'open':
-            stack.append((tag['name'], tag['start'], tag.get('content_start', tag['end'])))
-        else:  # closing tag
-            if stack:
-                open_tag, open_pos, content_start = stack.pop()
-                if open_tag == tag['name']:
-                    # Matching pair - good
-                    pass
-                else:
-                    # Mismatched tags - fix it
-                    corrections.append({
-                        'type': 'mismatch',
-                        'expected': f'[/{open_tag}]',
-                        'found': f'[/{tag["name"]}]',
-                        'position': tag['start'],
-                        'fix': f'[/{open_tag}]'
-                    })
-                    # Replace the mismatched closing tag
-                    text = text[:tag['start']] + f'[/{open_tag}]' + text[tag['end']:]
-                    # Adjust offset for the replacement
-                    tag['end'] = tag['start'] + len(f'[/{open_tag}]')
-    
-    # Check for unclosed tags
-    for open_tag, open_pos, content_start in stack:
-        corrections.append({
-            'type': 'unclosed',
-            'tag': f'[{open_tag}]',
-            'position': open_pos,
-            'fix': f'[/{open_tag}]'
-        })
-        # Add missing closing tag
-        text = text + f'[/{open_tag}]'
-    
-    # Check for orphaned closing tags (already handled by position sorting)
-    
+    corrections, replacements, stack = [], [], []
+    # Keep all offsets tied to the original source. Replacing a long control
+    # closer with a short Chinese ID must not shift later repair positions.
+    for match in structural_tags(text):
+        name = match[2].lower()
+        if not match[1]:
+            stack.append((match[2], match.start()))
+        elif stack:
+            open_tag, open_pos = stack.pop()
+            if open_tag.lower() != name:
+                fix = f'[/{open_tag}]'
+                corrections.append({'type': 'mismatch', 'expected': fix,
+                                    'found': match[0], 'position': match.start(), 'fix': fix})
+                replacements.append((match.start(), match.end(), fix))
+    for start, end, fix in reversed(replacements):
+        text = text[:start] + fix + text[end:]
+    for open_tag, open_pos in reversed(stack):
+        fix = f'[/{open_tag}]'
+        corrections.append({'type': 'unclosed', 'tag': f'[{open_tag}]',
+                            'position': open_pos, 'fix': fix})
+        text += fix
     return text, corrections
 
 
@@ -121,7 +76,7 @@ def normalize_speaker_name(name: str) -> str:
     - Replace spaces with hyphens
     - Remove special characters
     """
-    return re.sub(r'[^a-z0-9\-]', '', name.lower().replace(' ', '-'))
+    return normalize_speaker_id(name)
 
 
 def suggest_speaker_mapping(speakers: List[str], known_speakers: List[str]) -> Dict[str, str]:
@@ -142,6 +97,8 @@ def suggest_speaker_mapping(speakers: List[str], known_speakers: List[str]) -> D
             continue  # Already known
         
         normalized = normalize_speaker_name(speaker)
+        if not normalized:
+            continue
         
         # Try exact match with normalized
         for known in known_speakers:
@@ -206,22 +163,7 @@ def validate_tags_strict(text: str) -> Tuple[bool, List[str]]:
     Returns:
         Tuple of (is_valid, list of errors)
     """
-    errors = []
-    
-    # Find all tags
-    opening = set(re.findall(r'\[([a-zA-Z0-9_\-]+)\]([^[]+)', text))
-    closing = set(re.findall(r'\[/([a-zA-Z0-9_\-]+)\]', text))
-    
-    # Check each opening tag has a closing
-    for tag, content in opening:
-        if f'[/{tag}]' not in text:
-            errors.append(f"Tag [{tag}] is missing closing tag")
-    
-    # Check for unmatched closing tags
-    for tag in closing:
-        if f'[{tag}]' not in text:
-            errors.append(f"Closing tag [/{tag}] has no opening")
-    
+    errors = tag_errors(text)
     return len(errors) == 0, errors
 
 

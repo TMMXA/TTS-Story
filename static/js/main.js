@@ -444,8 +444,47 @@ const HELP_TOPICS = {
 };
 
 const VOICE_DESIGN_STANDARD_PREVIEW_TEXT = 'With this line of text, you will always know exactly where I stand, and what I sound like. Whether you like it or not, though, it may not be what you think. Listen carefully as my tone moves from quiet reflection toward clear and confident resolve.';
+const VOICE_DESIGN_CHINESE_PREVIEW_TEXT = '当你听到这段声音时，应该能够清楚地感受到我的语气和声音特点。也许它与你最初想象的并不完全相同。请仔细听，我会从安静而克制的思考，逐渐转向清晰、坚定而有力量的表达。';
+
+function resolveSpeakerVoiceDesignLanguage(profile = {}) {
+    const novelSettings = window.getChineseNovelSettings?.() || {};
+    for (const candidate of [profile?.voice_design_language, novelSettings.language]) {
+        const value = String(candidate || '').trim();
+        if (value && value.toLowerCase() !== 'auto') return value;
+    }
+    const source = document.getElementById('input-text')?.value || profile?.voice_preview_text || profile?.voice || '';
+    if (/[\u3040-\u30ff]/u.test(source)) return 'Japanese';
+    if (/[\uac00-\ud7af]/u.test(source)) return 'Korean';
+    if (/[\p{Script=Han}]/u.test(source)) return 'Chinese';
+    return 'English';
+}
 
 function buildCharacterPreviewText(_speaker, _profile = {}) {
+    const language = resolveSpeakerVoiceDesignLanguage(_profile);
+    if (language === 'Chinese') {
+        const source = document.getElementById('input-text')?.value || '';
+        const escapedSpeaker = String(_speaker || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const passages = source.matchAll(new RegExp(`\\[${escapedSpeaker}\\]([\\s\\S]*?)\\[/${escapedSpeaker}\\]`, 'gu'));
+        for (const match of passages) {
+            const passage = match[1].replace(/\s+/g, ' ').trim();
+            const hanCount = (passage.match(/\p{Script=Han}/gu) || []).length;
+            // A moderate real passage is useful for reference casting. Short
+            // exclamations and strongly punctuated passages use the neutral sample.
+            if (hanCount < 60 || /\[|\]/.test(passage)
+                || (passage.match(/[!！?？]/g) || []).length > 3) continue;
+            const sentences = passage.match(/[^。！？!?]+[。！？!?]?[”」』]?/gu) || [passage];
+            let selected = '';
+            for (const sentence of sentences) {
+                if ((selected + sentence).length > 140) break;
+                selected += sentence;
+                if ((selected.match(/\p{Script=Han}/gu) || []).length >= 100) break;
+            }
+            if ((selected.match(/\p{Script=Han}/gu) || []).length >= 60) return selected;
+        }
+        return VOICE_DESIGN_CHINESE_PREVIEW_TEXT;
+    }
+    if (language === 'Japanese') return 'この声を聞くと、私の話し方や声の響きを感じられるでしょう。想像していた印象と少し違うかもしれません。静かな思いから、はっきりとした決意へと変わる表現を、ゆっくり聞いてください。';
+    if (language === 'Korean') return '이 목소리를 들으면 나의 말투와 목소리의 특징을 분명하게 느낄 수 있을 것입니다. 처음 상상했던 모습과 조금 다를 수도 있습니다. 차분한 생각에서 또렷하고 힘 있는 표현으로 이어지는 목소리를 주의 깊게 들어 주세요.';
     return VOICE_DESIGN_STANDARD_PREVIEW_TEXT;
 }
 
@@ -456,7 +495,10 @@ function buildSpeakerVoiceDesignPayload(speaker, displayName) {
     const gender = parseGenderFromSpeakerName(speaker)
         || (/\bfemale\b|\bwoman\b/.test(voiceGenderText) ? 'Female' : null)
         || (/\bmale\b|\bman\b/.test(voiceGenderText) ? 'Male' : null)
-        || (/\bgender[- ]neutral\b|\bnonbinary\b/.test(voiceGenderText) ? 'Neutral' : null);
+        || (/\bgender[- ]neutral\b|\bnonbinary\b/.test(voiceGenderText) ? 'Neutral' : null)
+        || (/女声|女性|少女|女孩|女童/.test(voiceGenderText) ? 'Female' : null)
+        || (/男声|男性|少年|男孩|男童/.test(voiceGenderText) ? 'Male' : null)
+        || (/中性|性别中立/.test(voiceGenderText) ? 'Neutral' : null);
     if (!voiceType && !profile?.voice_design_prompt?.trim()) {
         throw new Error(`Add a Voice Type for ${speaker} before generating.`);
     }
@@ -468,7 +510,8 @@ function buildSpeakerVoiceDesignPayload(speaker, displayName) {
         speaker,
         gender,
         required_gender: true,
-        language: 'English',
+        language: resolveSpeakerVoiceDesignLanguage(profile),
+        novel_settings: window.getChineseNovelSettings?.() || {},
         description: voiceType,
         voice_type: voiceType,
         voice_design_prompt: profile?.voice_design_prompt?.trim() || '',
@@ -1088,6 +1131,9 @@ function resolveBookTitleFromSections(sections) {
         if (/^(chapter|section|book|part|letter|prologue|epilogue)\b/i.test(title)) {
             continue;
         }
+        if (/^第[ \t\u3000]*[0-9０-９〇零一二三四五六七八九十百千万两]+[ \t\u3000]*章(?:$|[ \t\u3000:：.．、—\-*][^\r\n]*)$/u.test(title)) {
+            continue;
+        }
         return title;
     }
     return '';
@@ -1113,7 +1159,8 @@ async function fetchSpeakerProfiles() {
                 speakers: currentStats.speakers,
                 context,
                 prompt_override: promptOverride || undefined,
-                processed_text: processedText || undefined
+                processed_text: processedText || undefined,
+                novel_settings: window.getChineseNovelSettings?.() || {}
             })
         });
         const data = await response.json();
@@ -1219,11 +1266,12 @@ async function deleteProject(projectId) {
 }
 
 function formatSpeakerTagName(value) {
-    const raw = (value || '').toString().trim().toLowerCase();
+    const raw = (value || '').toString().normalize('NFC').trim().toLowerCase();
     if (!raw) return '';
     const spaced = raw.replace(/\s+/g, '-');
-    const cleaned = spaced.replace(/[^a-z0-9_-]/g, '');
-    return cleaned.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+    const cleaned = spaced.replace(/[^\p{L}\p{N}_-]/gu, '');
+    const result = cleaned.replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+    return new RegExp(`^${SPEAKER_TAG_NAME_SOURCE}$`, 'u').test(result) ? result : '';
 }
 
 function appendQwen3VoiceOptions(selectElement) {
@@ -3168,10 +3216,14 @@ let _geminiPrepAbortRequested = false;
 
 function _geminiPrepHash(text) {
     let h = 0;
-    for (let i = 0; i < Math.min(text.length, 2000); i++) {
-        h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
+    let second = 2166136261;
+    const signature = JSON.stringify([text, getChineseNovelSettings(), document.getElementById('novel-character-registry')?.value || '',
+        document.getElementById('gemini-preset-select')?.value || '', getSelectedGeminiPromptOverride()]);
+    for (let i = 0; i < signature.length; i++) {
+        h = (Math.imul(31, h) + signature.charCodeAt(i)) | 0;
+        second = Math.imul(second ^ signature.charCodeAt(i), 16777619);
     }
-    return (h >>> 0).toString(36) + '_' + text.length;
+    return (h >>> 0).toString(36) + '_' + (second >>> 0).toString(36) + '_' + text.length;
 }
 
 async function _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile = '') {
@@ -3185,6 +3237,8 @@ async function _savePrepProgress(textHash, sections, outputs, knownSpeakers, act
                 outputs,
                 known_speakers: Array.from(knownSpeakers),
                 active_profile: activeProfile || '',
+                novel_settings: getChineseNovelSettings(),
+                character_registry: getChineseNovelRegistry(),
                 timestamp: Date.now()
             })
         });
@@ -3303,6 +3357,14 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
     const inputEl = document.getElementById('input-text');
     const enabledHeadings = getEnabledSectionHeadings();
     const promptOverride = getSelectedGeminiPromptOverride();
+    const novelSettings = savedProgress?.novel_settings || getChineseNovelSettings();
+    let characterRegistry;
+    try {
+        characterRegistry = savedProgress?.character_registry || getChineseNovelRegistry();
+    } catch (error) {
+        showNotification(error.message || 'Invalid character aliases.', 'error');
+        return;
+    }
     updateGeminiProgress({ visible: true, label: 'Preparing LLM request…', count: '', fill: 5 });
 
     const originalLabel = buttonEl ? buttonEl.textContent : '';
@@ -3369,6 +3431,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 body: JSON.stringify({
                     text,
                     prefer_chapters: true,
+                    novel_settings: novelSettings,
                     section_headings: enabledHeadings
                 })
             });
@@ -3411,7 +3474,10 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
             });
 
             const payload = {
-                content: section.content || ''
+                content: section.content || '',
+                context: section.context || '',
+                novel_settings: novelSettings,
+                character_registry: characterRegistry,
             };
             if (promptOverride) {
                 payload.prompt_override = promptOverride;
@@ -3508,7 +3574,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 _showPrepResumePanel(
                     outputs.length,
                     sections.length,
-                    () => _runGeminiPrep(buttonEl, text, textHash, { sections, outputs, known_speakers: Array.from(knownSpeakers), active_profile: activeProfile }),
+                    () => _runGeminiPrep(buttonEl, text, textHash, { sections, outputs, known_speakers: Array.from(knownSpeakers), active_profile: activeProfile, novel_settings: novelSettings, character_registry: characterRegistry }),
                     async () => {
                         await _clearPrepProgress(textHash);
                         await _runGeminiPrep(buttonEl, text, textHash, null);
@@ -3527,8 +3593,11 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
             fill: 100
         });
 
+        const preparedText = isChineseNovelSettings(novelSettings, text)
+            ? joinChineseNovelSections(text, sections, outputs)
+            : outputs.join('\n\n').trim();
         await _clearPrepProgress(textHash);
-        inputEl.value = outputs.join('\n\n').trim();
+        inputEl.value = preparedText;
 
         lastAnalyzedText = '';
         showNotification('LLM processing complete! Text updated.', 'success');
@@ -3588,7 +3657,7 @@ function updateGeminiProgress({ visible, label, count, fill }) {
 }
 
 // Section heading chips management
-const DEFAULT_SECTION_HEADINGS = ['book', 'chapter', 'section', 'letter', 'part', 'prologue', 'epilogue'];
+const DEFAULT_SECTION_HEADINGS = ['book', 'chapter', '第*章', 'section', 'letter', 'part', 'prologue', 'epilogue'];
 let enabledSectionHeadings = [...DEFAULT_SECTION_HEADINGS];
 let customSectionHeadings = [];
 
@@ -4550,7 +4619,13 @@ function setupEventListeners() {
 
     if (projectSaveConfirm) {
         projectSaveConfirm.addEventListener('click', async () => {
-            const project = getProjectState();
+            let project;
+            try {
+                project = getProjectState();
+            } catch (error) {
+                showNotification(error.message || 'Invalid character aliases.', 'error');
+                return;
+            }
             const name = projectNameInput?.value?.trim() || `Project ${new Date().toLocaleString()}`;
             project.name = name;
             try {
@@ -4825,7 +4900,7 @@ async function analyzeText(options = {}) {
 }
 
 function normalizeSpeakerLabel(label) {
-    return (label || '').toString().trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    return (label || '').toString().normalize('NFC').trim().toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 function normalizeSpeakerKey(label) {
@@ -4835,6 +4910,21 @@ function normalizeSpeakerKey(label) {
 
 function inferVoiceAgeCategory(source) {
     const text = (source || '').toString().toLowerCase();
+    const chineseAge = text.match(/(\d{1,2})\s*岁/);
+    if (chineseAge) {
+        const age = Number(chineseAge[1]);
+        if (age <= 12) return 'child';
+        if (age <= 17) return 'teenage';
+        if (age <= 29) return 'young-adult';
+        if (age >= 65) return 'elderly';
+        if (age >= 45) return 'middle-aged';
+        return 'adult';
+    }
+    if (/儿童|童声|男童|女童|小孩/.test(text)) return 'child';
+    if (/少年|少女|青少年/.test(text)) return 'teenage';
+    if (/青年|年轻/.test(text)) return 'young-adult';
+    if (/中年/.test(text)) return 'middle-aged';
+    if (/老年|老人|老者|苍老/.test(text)) return 'elderly';
     const ageMatch = text.match(/\b(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?\s*[- ]?\s*(?:years?|yrs?)(?:\s*[- ]\s*old)?\b/);
     if (ageMatch) {
         const age = Math.max(Number(ageMatch[1]), Number(ageMatch[2] || ageMatch[1]));
@@ -4867,18 +4957,18 @@ function buildVoiceAgeGenderPrefix(gender, source) {
     return `${ageLabel} ${genderLabel} VOICE`;
 }
 
-function buildLocalVoiceDesignPrompt(speaker, voiceType, suppliedPrompt = '') {
+function buildLocalVoiceDesignPrompt(speaker, voiceType, suppliedPrompt = '', language = null) {
     const supplied = (suppliedPrompt || '').toString().replace(/\s+/g, ' ').trim();
     const voice = (voiceType || '').toString().replace(/\s+/g, ' ').trim();
     if (!voice && !supplied) return '';
     const source = `${speaker || ''} ${voice} ${supplied}`.toLowerCase();
     let gender = 'neutral';
-    if (/\bfemale\b|\bwoman\b|\bgirl\b|\bsoprano\b|\balto\b/.test(source)) {
+    if (/\bfemale\b|\bwoman\b|\bgirl\b|\bsoprano\b|\balto\b|女声|女性|少女|女孩|女童/.test(source)) {
         gender = 'female';
-    } else if (/\bmale\b|\bman\b|\bboy\b|\bbaritone\b|\bbass\b|\btenor\b/.test(source)) {
+    } else if (/\bmale\b|\bman\b|\bboy\b|\bbaritone\b|\bbass\b|\btenor\b|男声|男性|少年|男孩|男童/.test(source)) {
         gender = 'male';
     }
-    const genderPhrase = buildVoiceAgeGenderPrefix(gender, source);
+    const genderPhrase = buildVoiceAgeGenderPrefix(gender, supplied || source);
     let positiveVoice = (supplied || voice)
         .replace(/\b(?:suitable\s+)?for\s+(?:sustained\s+)?(?:an?\s+)?audiobook(?:\s+(?:dialogue|narration))?\b/gi, ' ')
         .replace(/\baudiobook(?:\s+(?:dialogue|narration))?\b/gi, ' ')
@@ -4891,8 +4981,10 @@ function buildLocalVoiceDesignPrompt(speaker, voiceType, suppliedPrompt = '') {
         .trim()
         .replace(/[.;,]+$/, '');
     if (!positiveVoice) positiveVoice = voice.replace(/\s+/g, ' ').trim().replace(/[.;,]+$/, '');
-    if (positiveVoice && !/\baccent\b|\bEnglish\b/i.test(positiveVoice)) {
-        positiveVoice = `${positiveVoice}. Neutral English accent`;
+    if (positiveVoice && !/\baccent\b|\bEnglish\b|\bMandarin\b|普通话/i.test(positiveVoice)) {
+        const accent = (language || resolveSpeakerVoiceDesignLanguage({ voice: voiceType })) === 'Chinese'
+            ? 'Standard Mandarin' : 'Neutral English accent';
+        positiveVoice = `${positiveVoice}. ${accent}`;
     }
     let prompt = `${genderPhrase}. ${positiveVoice}`.replace(/\s+/g, ' ').trim().replace(/\.+$/, '');
     if (prompt.length > 150) {
@@ -4914,7 +5006,8 @@ function setSpeakerProfiles(profiles) {
             name,
             description: profile?.description || '',
             voice,
-            voice_design_prompt: buildLocalVoiceDesignPrompt(name, voice, profile?.voice_design_prompt),
+            voice_design_prompt: buildLocalVoiceDesignPrompt(name, voice, profile?.voice_design_prompt, profile?.voice_design_language),
+            voice_design_language: profile?.voice_design_language || 'Auto',
             voice_preview_text: profile?.voice_preview_text || '',
             voice_candidate_count: Math.max(1, Math.min(Number.parseInt(profile?.voice_candidate_count, 10) || 1, 10)),
             voice_design_engine: normalizeVoiceDesignEngine(profile?.voice_design_engine),
@@ -4952,6 +5045,7 @@ function updateSpeakerProfileEntry(speaker, updates = {}) {
         description: profile?.description || '',
         voice: profile?.voice || '',
         voice_design_prompt: profile?.voice_design_prompt || '',
+        voice_design_language: profile?.voice_design_language || 'Auto',
         voice_preview_text: profile?.voice_preview_text || '',
         voice_candidate_count: profile?.voice_candidate_count || 1,
         voice_design_engine: normalizeVoiceDesignEngine(profile?.voice_design_engine),
@@ -5004,7 +5098,8 @@ async function buildSingleSpeakerProfile(speaker) {
                 speakers: [speaker],
                 context,
                 prompt_override: promptOverride || undefined,
-                processed_text: processedText
+                processed_text: processedText,
+                novel_settings: window.getChineseNovelSettings?.() || {}
             })
         });
         const data = await response.json();
@@ -5021,10 +5116,12 @@ async function buildSingleSpeakerProfile(speaker) {
             name: speaker,
             description: generatedProfile.description || '',
             voice: generatedVoice,
+            voice_design_language: generatedProfile.voice_design_language || existingProfile?.voice_design_language || 'Auto',
             voice_design_prompt: buildLocalVoiceDesignPrompt(
                 speaker,
                 generatedVoice,
-                generatedProfile.voice_design_prompt || existingProfile?.voice_design_prompt || ''
+                generatedProfile.voice_design_prompt || existingProfile?.voice_design_prompt || '',
+                generatedProfile.voice_design_language || existingProfile?.voice_design_language
             ),
             voice_preview_text: generatedProfile.voice_preview_text || existingProfile?.voice_preview_text || ''
         });
@@ -5204,7 +5301,7 @@ async function generateSpeakerVoicePrompt(speaker) {
     const payload = {
         name: speaker,
         gender: parseGenderFromSpeakerName(speaker),
-        language: 'English',
+        language: resolveSpeakerVoiceDesignLanguage(profile),
         description: shortDescription,
         text: sampleText,
         instruct
@@ -5245,6 +5342,8 @@ async function generateSpeakerVoicePrompt(speaker) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 ...payload,
+                ...previewResult,
+                text: previewResult.preview_text || payload.text,
                 audio_base64: previewResult.audio_base64
             })
         });
@@ -5388,7 +5487,8 @@ function renderSpeakerProfileSummary(speaker) {
     const voice = profile?.voice || '';
     const voiceDesignPrompt = profile?.voice_design_prompt || '';
     const voiceDesignEngine = normalizeVoiceDesignEngine(profile?.voice_design_engine);
-    const previewText = profile?.voice_preview_text || buildCharacterPreviewText(speaker, profile || {});
+    const previewText = buildCharacterPreviewText(speaker, profile || {});
+    const voiceDesignLanguage = profile?.voice_design_language || 'Auto';
     const candidateCount = Math.max(1, Math.min(Number.parseInt(profile?.voice_candidate_count, 10) || 1, 10));
     const selectedVoiceName = profile?.selected_voice_name || '';
     const selectedVoicePath = profile?.selected_voice_path || '';
@@ -5420,9 +5520,16 @@ function renderSpeakerProfileSummary(speaker) {
                     </select>
                 </label>
                 <label>
+                    <strong>Voice Design Language:</strong>
+                    <select class="speaker-profile-input" data-role="speaker-voice-design-language">
+                        ${['Auto', 'English', 'Chinese', 'Japanese', 'Korean'].map(language => `<option value="${language}" ${voiceDesignLanguage === language ? 'selected' : ''}>${language}</option>`).join('')}
+                    </select>
+                    <small>Auto follows Novel Language and the story text.</small>
+                </label>
+                <label>
                     <strong>Preview Text:</strong>
                     <textarea class="speaker-profile-input" data-role="speaker-voice-preview-text" rows="2" readonly>${escapeHtml(previewText)}</textarea>
-                    <small>The same standardized inflection passage is used for every candidate.</small>
+                    <small>Chinese casting uses suitable dialogue from this speaker, or a standard sample. All candidates use the same text and instruction with different seeds.</small>
                 </label>
                 <label>
                     <strong>Voice Candidates:</strong>
@@ -5464,6 +5571,7 @@ function renderSpeakerProfileSummary(speaker) {
     const voiceInput = summary.querySelector('[data-role="speaker-profile-voice"]');
     const voiceDesignInput = summary.querySelector('[data-role="speaker-voice-design-prompt"]');
     const voiceDesignEngineSelect = summary.querySelector('[data-role="speaker-voice-design-engine"]');
+    const voiceDesignLanguageSelect = summary.querySelector('[data-role="speaker-voice-design-language"]');
     const candidateCountInput = summary.querySelector('[data-role="speaker-voice-candidate-count"]');
     const buildBtn = summary.querySelector('[data-role="speaker-build-profile"]');
     const generateBtn = summary.querySelector('[data-role="speaker-generate-voice"]');
@@ -5488,6 +5596,12 @@ function renderSpeakerProfileSummary(speaker) {
             const engine = normalizeVoiceDesignEngine(event.currentTarget.value);
             updateSpeakerProfileEntry(speaker, { voice_design_engine: engine });
             refreshQwenVoiceDesignControls();
+        });
+    }
+    if (voiceDesignLanguageSelect) {
+        voiceDesignLanguageSelect.addEventListener('change', event => {
+            updateSpeakerProfileEntry(speaker, { voice_design_language: event.currentTarget.value || 'Auto' });
+            renderSpeakerProfileSummary(speaker);
         });
     }
     if (candidateCountInput) {
@@ -5827,6 +5941,8 @@ function getProjectState() {
         acx_compliance: document.getElementById('acx-compliance-checkbox')?.checked || false,
         gemini_prompt: document.getElementById('gemini-prompt')?.value || '',
         gemini_preset: document.getElementById('gemini-preset-select')?.value || '',
+        novel_settings: getChineseNovelSettings(),
+        character_registry: getChineseNovelRegistry(),
         bulk_voice_prefix: document.getElementById('speaker-batch-prefix')?.value || '',
         bulk_voice_candidate_count: Math.max(1, Math.min(Number.parseInt(document.getElementById('speaker-batch-candidate-count')?.value, 10) || 1, 10)),
         bulk_voice_design_engine: normalizeVoiceDesignEngine(document.getElementById('speaker-batch-design-engine')?.value),
@@ -5968,6 +6084,8 @@ async function applyProjectState(project) {
     if (geminiPrompt) geminiPrompt.value = project.gemini_prompt || '';
     const geminiPreset = document.getElementById('gemini-preset-select');
     if (geminiPreset) geminiPreset.value = project.gemini_preset || '';
+    applyChineseNovelSettings(project.novel_settings || {});
+    applyChineseNovelRegistry(project.character_registry || []);
     const batchCandidateCount = document.getElementById('speaker-batch-candidate-count');
     if (batchCandidateCount) {
         batchCandidateCount.value = String(Math.max(1, Math.min(Number.parseInt(project.bulk_voice_candidate_count, 10) || 1, 10)));
@@ -6740,6 +6858,12 @@ async function generateAudio() {
 
 // ── Speaker tag balance checker & inline banner ───────────────────────────────
 
+// Mirrors src/chinese_novel/speaker_ids.py. Decimal-only citations remain cues.
+const SPEAKER_TAG_NAME_SOURCE = String.raw`[\p{L}\p{Nl}\p{No}][\p{L}\p{N}_-]*`;
+function speakerTagRegex(closing = false) {
+    return new RegExp(String.raw`\[${closing ? '/' : ''}(${SPEAKER_TAG_NAME_SOURCE})\]`, 'gu');
+}
+
 const _TAG_RESERVED = new Set();
 // Keep synchronized with src/tag_validation.py. Unknown opening IDs must not
 // disappear merely because their closing tags are missing.
@@ -6755,8 +6879,8 @@ const _TAG_EXPRESSIONS = new Set(['laugh', 'laughter', 'chuckle', 'sigh', 'sush'
  * `pos` is the character index in `text` of the offending tag.
  */
 function getSpeakerTagIssues(text) {
-    const openRe = /\[([a-zA-Z][a-zA-Z0-9_\-]*)\]/g;
-    const closeRe = /\[\/([a-zA-Z][a-zA-Z0-9_\-]*)\]/g;
+    const openRe = speakerTagRegex();
+    const closeRe = speakerTagRegex(true);
 
     // Only known standalone expression cues can be excluded without a closer.
     const closedTags = new Set();
@@ -6853,7 +6977,7 @@ function _updateTagErrorBanner() {
 
     const text = textarea.value;
     // Only run the check when the text actually contains any speaker tags
-    const hasTags = /\[\/?[a-zA-Z][a-zA-Z0-9_\-]*\]/.test(text);
+    const hasTags = new RegExp(String.raw`\[/?${SPEAKER_TAG_NAME_SOURCE}\]`, 'u').test(text);
     if (!hasTags) {
         _tagIssues = [];
         banner.classList.add('hidden');
@@ -7014,13 +7138,13 @@ function _autoFixTagBalance() {
     function allTags(t) {
         const out = [];
         let m;
-        const paired = new Set([...t.matchAll(/\[\/([a-zA-Z][a-zA-Z0-9_\-]*)\]/g)].map(m => m[1].toLowerCase()));
-        const r1 = /\[([a-zA-Z][a-zA-Z0-9_\-]*)\]/g;
+        const paired = new Set([...t.matchAll(speakerTagRegex(true))].map(m => m[1].toLowerCase()));
+        const r1 = speakerTagRegex();
         while ((m = r1.exec(t)) !== null) {
             const tg = m[1].toLowerCase();
             if (!_TAG_EXPRESSIONS.has(tg) || paired.has(tg)) out.push({ pos: m.index, end: m.index + m[0].length, kind: 'open', tag: tg });
         }
-        const r2 = /\[\/([a-zA-Z][a-zA-Z0-9_\-]*)\]/g;
+        const r2 = speakerTagRegex(true);
         while ((m = r2.exec(t)) !== null) {
             const tg = m[1].toLowerCase();
             if (!_TAG_RESERVED.has(tg)) out.push({ pos: m.index, end: m.index + m[0].length, kind: 'close', tag: tg });
