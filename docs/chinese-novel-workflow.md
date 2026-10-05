@@ -77,3 +77,8 @@ python scripts/chinese_audio_smoke.py --base-url http://YOUR-TTS-STORY:5000 --ou
 验收，发生未知 POST 结果时须先核实服务端，避免重复提交 GPU 任务。
 测试没有在本机下载或部署文本/语音模型。音色自然度和听感仍需人工评估。
 完整中文 UI、人物关系、自动选角和完整 Character Book 不在此阶段。
+# Long Prep recovery
+
+Chinese Prep validates every model output against the exact original prose. If the model rewrites, omits or repeats text, or returns invalid markup, Prep first requests one corrected output and then divides only the failing source span into smaller paragraph/sentence segments. Each segment must pass the same source check; accepted segments are joined without changing whitespace. Recovery is bounded to 24 calls per section and stops at approximately 250 text units if the model still fails. Provider and configuration errors remain visible and do not trigger source splitting.
+
+The resume panel shows the actual failure and saves it with the selected prompt and settings. Previously accepted sections remain saved. Output token-limit termination is detected for local OpenAI-compatible and Ollama services, including empty truncated responses.

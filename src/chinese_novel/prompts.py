@@ -124,7 +124,12 @@ def compose_novel_prompt(section, prompt_prefix='', known_speakers=None, novel_s
     settings = normalize_novel_settings(novel_settings)
     parts = [CHINESE_NOVEL_PROMPT]
     if prompt_prefix:
-        parts.append(prompt_prefix.strip())
+        # Built-in presets already include the base instructions.
+        suffix = prompt_prefix.strip()
+        if suffix.startswith(CHINESE_NOVEL_PROMPT):
+            suffix = suffix[len(CHINESE_NOVEL_PROMPT):].strip()
+        if suffix:
+            parts.append(suffix)
     if settings['narrative_mode'] == 'first_person':
         parts.append(FIRST_PERSON_RULES)
         if settings['first_person_protagonist']:
@@ -201,11 +206,13 @@ def preserve_source_markup(source, response, novel_settings=None, character_regi
             while cursor < len(body) and body[cursor].isspace():
                 cursor += 1
             if cursor >= len(body) or body[cursor] != char:
-                raise ValueError('Chinese Novel source preservation failed: output changed or repeated source text')
+                raise ValueError('Chinese Novel source preservation failed: output changed or repeated source text '
+                                 f'at source offset {len(prefix) + cursor} of {len(source)}')
             cursor += 1
             rendered.append(body[start:cursor])
     if body[cursor:].strip() or (body.strip() and not spoke):
-        raise ValueError('Chinese Novel source preservation failed: output omitted source or speaker markup')
+        raise ValueError('Chinese Novel source preservation failed: output omitted source or speaker markup '
+                         f'at source offset {len(prefix) + cursor} of {len(source)}')
     rendered.append(body[cursor:])
     result = ''.join(rendered)
     final_errors = tag_errors(result)

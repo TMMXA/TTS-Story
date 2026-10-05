@@ -10410,15 +10410,16 @@ def process_text_with_gemini():
                 config.get('novel_settings'),
                 data.get('character_registry') or [],
             )
-            response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
-                combined_prompt,
-                config,
-                preferred_profile=active_profile,
-            )
-            active_profile = profile_used["id"]
             if is_chinese_novel(config.get('novel_settings'), chapter_text):
-                response_text = preserve_source_markup(section.get('content') or '', response_text,
-                                                      config.get('novel_settings'), data.get('character_registry') or [])
+                recovered = _prepare_chinese_section(section, config, prompt_prefix,
+                    sorted(known_speakers), config.get('novel_settings'),
+                    data.get('character_registry') or [], active_profile)
+                response_text, profile_used, provider_failures = (
+                    recovered['result_text'], recovered['profile'], recovered['failures'])
+            else:
+                response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
+                    combined_prompt, config, preferred_profile=active_profile)
+            active_profile = profile_used["id"] if profile_used else active_profile
             detected_speakers = text_processor.extract_speakers(response_text)
             for speaker_name in detected_speakers:
                 known_speakers.add(speaker_name)
@@ -10668,6 +10669,31 @@ def get_gemini_sections():
         }), 500
 
 
+def _prepare_chinese_section(section, config, prompt_prefix, known_speakers,
+                             novel_settings, character_registry, preferred_profile='',
+                             defer_transient_failover=False, **structured_options):
+    from src.chinese_novel.preparation import prepare_chinese_novel, NovelPreparationError
+    active = preferred_profile
+    def generate(prompt):
+        nonlocal active
+        result = _run_llm_prompt_with_failover(prompt, config, preferred_profile=active,
+            defer_transient_failover=defer_transient_failover, **structured_options)
+        if result[1]:
+            active = result[1]['id']
+        return result
+    try:
+        prepared = prepare_chinese_novel(section.get('content') or '', generate=generate,
+            context=section.get('context') or '', novel_settings=novel_settings,
+            character_registry=character_registry, prompt_prefix=prompt_prefix,
+            known_speakers=known_speakers)
+    except NovelPreparationError as exc:
+        logger.warning('Chinese Prep output validation failed: %s; diagnostics=%s', exc, exc.diagnostics)
+        raise
+    if prepared['diagnostics']['recovered']:
+        logger.info('Chinese Prep recovered invalid model output: %s', prepared['diagnostics'])
+    return prepared
+
+
 @app.route('/api/gemini/process-section', methods=['POST'])
 def process_gemini_section():
     """Process a single text section through the configured LLM."""
@@ -10739,18 +10765,22 @@ def process_gemini_section():
             structured_options = dict(response_schema=schema,
                                       response_schema_name='tts_story_directions',
                                       response_schema_strict=True)
-        response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
-            prompt,
-            config,
-            preferred_profile=preferred_profile,
-            defer_transient_failover=True,
-            **structured_options,
-        )
+        preparation_diagnostics = None
+        if chinese_novel and locked is None:
+            prepared = _prepare_chinese_section(
+                {'content': content, 'context': data.get('context') or ''}, config, prompt_prefix,
+                known_speakers, novel_settings, character_registry, preferred_profile,
+                defer_transient_failover=True, **structured_options)
+            response_text, profile_used, provider_failures = (
+                prepared['result_text'], prepared['profile'], prepared['failures'])
+            preparation_diagnostics = prepared['diagnostics']
+        else:
+            response_text, profile_used, provider_failures = _run_llm_prompt_with_failover(
+                prompt, config, preferred_profile=preferred_profile,
+                defer_transient_failover=True, **structured_options)
         audit = None
         if locked is not None:
             response_text, audit = assemble_directed(locked, response_text)
-        elif is_chinese_novel(novel_settings, content):
-            response_text = preserve_source_markup(content, response_text, novel_settings, character_registry)
         detected_speakers = text_processor.extract_speakers(response_text)
 
         return jsonify({
@@ -10758,13 +10788,16 @@ def process_gemini_section():
             "result_text": response_text if locked is not None or chinese_novel else response_text.strip(),
             "speakers": detected_speakers,
             "llm_profile_used": profile_used,
-            "llm_provider_used": profile_used["provider"],
+            "llm_provider_used": profile_used["provider"] if profile_used else None,
             "provider_failures": provider_failures,
             **({"direction_audit": audit} if audit is not None else {}),
+            **({"preparation_diagnostics": preparation_diagnostics} if preparation_diagnostics is not None else {}),
         })
 
     except (StructuredOutputError, ValueError) as exc:
-        return jsonify({"success": False, "error": str(exc), "retryable": False}), 400
+        logger.warning('LLM section rejected: %s', exc)
+        return jsonify({"success": False, "error": str(exc), "retryable": False,
+                        **({'preparation_diagnostics': exc.diagnostics} if hasattr(exc, 'diagnostics') else {})}), 400
     except (GeminiProcessorError, LocalLLMProcessorError, AtlasCloudProcessorError, OpenRouterProcessorError, LLMProviderChainError) as exc:
         err_str = str(exc)
         transient_markers = ("503", "UNAVAILABLE", "429", "quota", "rate limit", "rate_limit", "high demand", "try again")
@@ -10816,6 +10849,8 @@ def save_prep_progress():
             "outputs": data.get('outputs') or [],
             "known_speakers": data.get('known_speakers') or [],
             "active_profile": data.get('active_profile') or '',
+            "prompt_override": str(data.get('prompt_override') or ''),
+            "last_failure": str(data.get('last_failure') or '')[:2000],
             "novel_settings": normalize_novel_settings(data.get('novel_settings')),
             "character_registry": data.get('character_registry') or [],
             "timestamp": data.get('timestamp') or int(time.time() * 1000),

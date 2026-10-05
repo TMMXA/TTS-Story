@@ -102,7 +102,7 @@ def test_section_endpoint_preserves_heading_and_refuses_changed_source(monkeypat
     import app as app_module
     monkeypatch.setattr(app_module, 'load_config', lambda: {'llm_provider': 'local'})
     profile = {'id': 'primary', 'provider': 'local', 'name': 'test', 'model': 'test'}
-    responses = iter(['[旁白]我推开门。[/旁白]', '[旁白]他推开门。[/旁白]'])
+    responses = iter(['[旁白]我推开门。[/旁白]', '[旁白]他推开门。[/旁白]', '[旁白]他推开门。[/旁白]'])
     prompts = []
     def run(prompt, *args, **kwargs):
         prompts.append(prompt)
@@ -129,11 +129,14 @@ def test_prep_progress_retains_settings_and_active_profile(monkeypatch, tmp_path
                                   'first_person_protagonist': '叶临渊'},
                'character_registry': [{'display_name': '叶临渊', 'aliases': ['叶兄']}],
                'active_profile': 'backup_1'}
+    payload.update(prompt_override='用户指定预设', last_failure='source mismatch at offset 100')
     assert client.post('/api/prep-progress/save', json=payload).json['success']
     loaded = client.get('/api/prep-progress/load?text_hash=novel_123').json['progress']
     assert loaded['novel_settings']['first_person_protagonist'] == '叶临渊'
     assert loaded['character_registry'] == payload['character_registry']
     assert loaded['active_profile'] == 'backup_1'
+    assert loaded['prompt_override'] == payload['prompt_override']
+    assert loaded['last_failure'] == payload['last_failure']
 
 
 def test_sections_only_builds_bounded_chunks_without_inference(monkeypatch):
@@ -155,7 +158,7 @@ def test_legacy_prep_paths_preserve_source_and_reject_rewrites(monkeypatch, endp
     import app as app_module
     monkeypatch.setattr(app_module, 'load_config', lambda: {'llm_provider': 'local'})
     profile = {'id': 'primary', 'provider': 'local', 'name': 'test', 'model': 'test'}
-    responses = iter(['[叶临渊]我推开门。[/叶临渊]', '[叶临渊]他推开门。[/叶临渊]'])
+    responses = iter(['[叶临渊]我推开门。[/叶临渊]', '[叶临渊]他推开门。[/叶临渊]', '[叶临渊]他推开门。[/叶临渊]'])
     monkeypatch.setattr(app_module, '_run_llm_prompt_with_failover', lambda *args, **kwargs: (next(responses), profile, []))
     client = app_module.app.test_client()
     payload = {'text': '第一章 山雨\n我推开门。', 'novel_settings': {'language': 'Chinese'}}

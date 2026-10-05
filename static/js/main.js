@@ -3226,9 +3226,8 @@ function _geminiPrepHash(text) {
     return (h >>> 0).toString(36) + '_' + (second >>> 0).toString(36) + '_' + text.length;
 }
 
-async function _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile = '') {
-    try {
-        await fetch('/api/prep-progress/save', {
+async function _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile = '', options = {}) {
+        const response = await fetch('/api/prep-progress/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -3237,12 +3236,16 @@ async function _savePrepProgress(textHash, sections, outputs, knownSpeakers, act
                 outputs,
                 known_speakers: Array.from(knownSpeakers),
                 active_profile: activeProfile || '',
-                novel_settings: getChineseNovelSettings(),
-                character_registry: getChineseNovelRegistry(),
+                novel_settings: options.novel_settings || getChineseNovelSettings(),
+                character_registry: options.character_registry || getChineseNovelRegistry(),
+                prompt_override: options.prompt_override ?? getSelectedGeminiPromptOverride(),
+                last_failure: options.last_failure || '',
                 timestamp: Date.now()
             })
         });
-    } catch (e) { /* network error — ignore, progress already in memory */ }
+        if (!response.ok) throw new Error('Unable to save Prep progress to the server.');
+        const data = await response.json();
+        if (!data.success) throw new Error(data.error || 'Unable to save Prep progress to the server.');
 }
 
 async function _loadPrepProgress(textHash) {
@@ -3260,7 +3263,7 @@ async function _clearPrepProgress(textHash) {
     } catch (e) {}
 }
 
-function _showPrepResumePanel(completedCount, totalCount, onResume, onRestart, onAbort) {
+function _showPrepResumePanel(completedCount, totalCount, onResume, onRestart, onAbort, failure = '') {
     const panel = document.getElementById('gemini-resume-panel');
     const label = document.getElementById('gemini-resume-label');
     const resumeBtn = document.getElementById('gemini-resume-btn');
@@ -3268,7 +3271,7 @@ function _showPrepResumePanel(completedCount, totalCount, onResume, onRestart, o
     const abortBtn = document.getElementById('gemini-abort-panel-btn');
     if (!panel) return;
     const remaining = totalCount - completedCount;
-    if (label) label.textContent = `⚠️ ${completedCount} of ${totalCount} sections completed. ${remaining} remaining — will resume from section ${completedCount + 1}.`;
+    if (label) label.textContent = `⚠️ ${completedCount} of ${totalCount} sections completed. ${remaining} remaining — will resume from section ${completedCount + 1}.` + (failure ? ` Error: ${failure}` : '');
     panel.style.display = 'block';
     [resumeBtn, restartBtn, abortBtn].forEach(btn => {
         if (!btn) return;
@@ -3315,7 +3318,7 @@ async function _checkAndShowPrepResume() {
             async () => {
                 await _clearPrepProgress(textHash);
                 showNotification('Prep aborted. All progress discarded.', 'error');
-            }
+            }, saved.last_failure || ''
         );
     }
 }
@@ -3345,7 +3348,7 @@ async function processWithGemini(buttonEl) {
             async () => {
                 await _clearPrepProgress(textHash);
                 showNotification('Prep aborted. All progress discarded.', 'error');
-            }
+            }, savedProgress.last_failure || ''
         );
         return;
     }
@@ -3356,7 +3359,7 @@ async function processWithGemini(buttonEl) {
 async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
     const inputEl = document.getElementById('input-text');
     const enabledHeadings = getEnabledSectionHeadings();
-    const promptOverride = getSelectedGeminiPromptOverride();
+    const promptOverride = savedProgress?.prompt_override ?? getSelectedGeminiPromptOverride();
     const novelSettings = savedProgress?.novel_settings || getChineseNovelSettings();
     let characterRegistry;
     try {
@@ -3402,6 +3405,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
 
     showNotification('Preparing text with the selected LLM...', 'info');
 
+    let runProgress = null;
     try {
         let sections, outputs, knownSpeakers, activeProfile;
 
@@ -3459,6 +3463,9 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
             }
         }
 
+        runProgress = {sections, outputs, known_speakers: Array.from(knownSpeakers), active_profile: activeProfile,
+            novel_settings: novelSettings, character_registry: characterRegistry, prompt_override: promptOverride};
+        await _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile, runProgress);
         const MAX_RETRIES = 5;
         const RETRY_BASE_DELAY_MS = 8000;
         const resumeFrom = outputs.length;
@@ -3562,7 +3569,8 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 });
             }
             outputs.push(sectionData.result_text || '');
-            await _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile);
+            Object.assign(runProgress, {known_speakers: Array.from(knownSpeakers), active_profile: activeProfile});
+            await _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile, runProgress);
 
             if (_geminiPrepAbortRequested) {
                 await _clearPrepProgress(textHash);
@@ -3574,7 +3582,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 _showPrepResumePanel(
                     outputs.length,
                     sections.length,
-                    () => _runGeminiPrep(buttonEl, text, textHash, { sections, outputs, known_speakers: Array.from(knownSpeakers), active_profile: activeProfile, novel_settings: novelSettings, character_registry: characterRegistry }),
+                    () => _runGeminiPrep(buttonEl, text, textHash, runProgress),
                     async () => {
                         await _clearPrepProgress(textHash);
                         await _runGeminiPrep(buttonEl, text, textHash, null);
@@ -3607,8 +3615,14 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
         }
     } catch (error) {
         console.error('LLM processing failed:', error);
-        const saved = await _loadPrepProgress(textHash);
-        if (saved && saved.outputs && saved.outputs.length > 0) {
+        const saved = runProgress || await _loadPrepProgress(textHash);
+        if (saved && saved.outputs && saved.sections) {
+            saved.last_failure = error.message || 'Failed to process with the selected LLM';
+            try {
+                await _savePrepProgress(textHash, saved.sections, saved.outputs, new Set(saved.known_speakers || []), saved.active_profile, saved);
+            } catch (saveError) {
+                saved.last_failure += ` ${saveError.message}`;
+            }
             _showPrepResumePanel(
                 saved.outputs.length,
                 saved.sections.length,
@@ -3617,9 +3631,10 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                     await _clearPrepProgress(textHash);
                     await _runGeminiPrep(buttonEl, text, textHash, null);
                 },
-                async () => { await _clearPrepProgress(textHash); showNotification('Prep aborted. All progress discarded.', 'error'); }
+                async () => { await _clearPrepProgress(textHash); showNotification('Prep aborted. All progress discarded.', 'error'); },
+                saved.last_failure
             );
-            showNotification(`Prep stopped at section ${saved.outputs.length} of ${saved.sections.length}. Progress saved — click Resume to continue.`, 'warning');
+            showNotification(`Prep stopped before section ${saved.outputs.length + 1}: ${saved.last_failure}`, 'error');
         } else {
             alert(error.message || 'Failed to process with the selected LLM');
         }
