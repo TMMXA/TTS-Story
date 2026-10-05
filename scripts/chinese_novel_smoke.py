@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--preset', choices=['chinese-novel', 'chinese-novel-directed', 'chinese-novel-first-person'], default='chinese-novel')
     parser.add_argument('--protagonist', default='叶临渊')
+    parser.add_argument('--source-locked', action='store_true', help='Exercise role-only source-locked preparation')
     args = parser.parse_args()
     from src.chinese_novel.chapter_detection import find_chinese_heading_matches
     from src.chinese_novel.prompts import join_novel_sections, with_chinese_novel_presets
@@ -64,6 +65,7 @@ def main():
         payload = post('/api/gemini/process-section', {
             **section, 'prompt_override': prompt, 'novel_settings': novel,
             'character_registry': registry, 'known_speakers': speakers,
+            'source_locked_prep': args.source_locked,
         })
         if not payload.get('success'):
             raise RuntimeError(f'Section {index}: {payload}')

@@ -119,3 +119,44 @@ voice distinction and cross-chapter timbre quality still require human listening
 reference reuse and non-silent audio do not establish those subjective properties.
 Use a real novel's 2–5 chapters for editorial/voice approval before expanding to
 a full Character Book, relationships or complete UI localization.
+
+## Long Prep failure and recovery — 2026-10-06
+
+Inspected the existing remote Prep checkpoint with 49 sections and two accepted
+outputs. The next section had 2,173 characters. With the configured LAN model,
+its response ended normally (`finish_reason=stop`) but inserted a repeated
+dialogue sentence. The strict source guard rejected it. The browser hid the
+actual error behind the generic `2 of 49 sections completed` resume notice.
+
+Bounded correction and exact-source splitting recovered the next sections, but
+the real section 15 still produced changed text at a roughly 200-character
+size. Source-locked role annotation was therefore added: the model returns only
+ordered span IDs, speakers and optional Directed delivery metadata; Python
+assembles the original text and validates every result. Successful use is saved
+and reused for subsequent sections. Auto language is frozen for the whole novel.
+
+The separate private validation copy completed all **49/49 sections**, covering
+**100,967 source characters** and 21 detected speaker IDs. Original accepted
+output hashes were unchanged. All 49 outputs were independently rechecked for
+source text, punctuation, whitespace and valid markup. The final 35-section
+inference phase took 307.9 seconds. Original inter-section gaps are retained by
+the UI assembly from its original full input; this checkpoint validation tests
+the individual sections rather than recreating those unavailable input gaps.
+The user's original two-section checkpoint file was not overwritten.
+
+Application revision **f6b1e45** is deployed through the existing Docker mounts
+and cached runtime. Config and the original Prep checkpoint have identical
+before/after SHA-256 hashes. The original 234-chunk job and eight-chunk validation
+job still load as completed. Real deployed HTTP tests also passed source-locked
+Directed and First Person Prep/Profile fixtures, including other-character
+dialogue ownership. Use `scripts/chinese_novel_smoke.py --source-locked` to repeat
+these route checks.
+
+The final targeted regression has **270 Python tests passing** and all nine
+JavaScript test files passing. It covers invalid/truncated model output,
+bounded recovery, complete/unique ordered annotation IDs, metadata injection,
+nested and continued quotes, first-person voices, custom role preferences,
+mixed-language source protection and saved strategy/error/prompt restoration.
+Repository safety and whitespace checks passed. Speaker attribution across an
+arbitrary novel still requires editorial review; exact source retention does
+not establish semantic attribution or speech quality.
