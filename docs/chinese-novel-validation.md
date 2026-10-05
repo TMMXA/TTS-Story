@@ -27,8 +27,8 @@ model, model runtime or engine environment was downloaded or deployed.
 - Full Story download without metadata, stale metadata/manifest paths, legacy
   output, path confinement and Unicode download filenames.
 
-Final results: 207 relevant Python tests and all 25 executable JavaScript tests
-passed. The broad lightweight Python run had 559 passes and 769 passing subtests,
+Final results: 213 relevant Python tests and all 25 executable JavaScript tests
+passed. The broad lightweight Python run had 565 passes and 769 passing subtests,
 with three existing unrelated failures. A one-million-Han-character chunking
 check produced 250 bounded 4000-unit chunks, reconstructed the source exactly,
 and completed in 1.48 seconds on this machine.
@@ -71,11 +71,51 @@ including whitespace.
 The local browser displayed Chinese speaker chips and novel controls correctly,
 with no captured JavaScript errors. The temporary browser/server were stopped.
 
-## Deferred real audio validation
+## Existing Docker deployment and real audio validation
 
-The user confirmed no speech model service is currently available and explicitly
-deferred real audio tests. Actual Mandarin naturalness, voice distinction,
-cross-chapter timbre consistency and real VoiceDesign/Clone synthesis remain
-unverified. Existing persistent/model directories and engine installers remain
-unchanged. Run a real novel's 2–5 chapters on an existing deployment before
-expanding to a full Character Book, relationships or complete UI localization.
+After initially deferring audio tests, the user authorized updating an existing
+Docker deployment and using its cached Qwen3 speech models. Deployed application
+revision `0ff1827` on its existing Python 3.10/CUDA runtime. The derived image was
+built offline from a Git bundle. The original image and a private backup of
+configuration, application data, references and audio were retained for rollback.
+All existing bind mounts and engine/model environments were reused. Configuration
+was verified byte-for-byte unchanged; an existing 234-chunk production and its
+Full Story remained accessible. No model weights were downloaded for this test.
+
+The deployed HTTP Prep/Profile routes passed all three two-chapter text suites.
+Real Qwen3 VoiceDesign/Clone HTTP queue validation then passed:
+
+- Two roles (旁白 and 叶临渊), two Chinese VoiceDesign candidates each, using
+  different seeds. Actual samples lasted 17.6–22.8 seconds. Generated audio hashes,
+  actual language, original sample, instruction, speaker, seed and persisted
+  transcript were checked. Only the test candidate groups were approved/archived.
+- Two Chinese chapters, eight ordered Voice Clone chunks. Paused at 2/8, then
+  resumed to 8/8. Completed chunk IDs, ordering, paths, text and audio SHA-256 were
+  unchanged across resume; references and Chinese transcripts stayed consistent.
+- One real single-chunk regeneration and regeneration of all four protagonist
+  chunks, followed by an explicit recompile through `/review/finish`. The existing
+  workflow auto-completes jobs first and supports review from the Library.
+- Actual downloads of all eight WAV chunks, two chapter MP3s and Full Story MP3.
+  Full Story was 52.802 seconds; chapter durations totalled 52.800 seconds.
+- Actual M4B export returned AAC audio, 52.844 seconds, and chapter markers
+  `第一章 石室` / `第二章 山外`, verified with FFprobe.
+- Restarted the updated container after tests. Both the original 234-chunk job
+  and the new eight-chunk job reloaded as completed, all ten voice entries
+  remained available, and Full Story download still returned HTTP 200.
+
+The reproducible `scripts/chinese_audio_smoke.py` uses only HTTP/standard-library
+clients, checkpoints server IDs and audio evidence, and can resume individual
+validation phases without resubmitting successful operations. Its six offline
+contract tests include auto-completed Library review, pause/resume audio identity
+and protection against duplicate POSTs after unknown transport outcomes.
+
+IndexTTS has an installed environment on that server, but its checkpoints contain
+only `pinyin.vocab`, without model weights. Its real synthesis remains untested;
+the automated mocked queue coverage still applies. No additional engine/model
+installation was started.
+
+Audio files are valid and available for listening. Mandarin naturalness, perceived
+voice distinction and cross-chapter timbre quality still require human listening;
+reference reuse and non-silent audio do not establish those subjective properties.
+Use a real novel's 2–5 chapters for editorial/voice approval before expanding to
+a full Character Book, relationships or complete UI localization.

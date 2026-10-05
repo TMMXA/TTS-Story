@@ -1,7 +1,8 @@
 """Run the real Prep/profile routes against an existing remote text model.
 
-No model or engine installation is performed. Configuration is changed only in
-this process. Outputs go to a caller-selected directory for manual review.
+No model or engine installation is performed. HTTP mode uses the server's saved
+configuration; in-process mode overrides it only in memory. Outputs go to a
+caller-selected directory for manual review.
 """
 import argparse
 import json
@@ -15,42 +16,55 @@ sys.path.insert(0, str(ROOT))
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--base-url', required=True)
-    parser.add_argument('--model', required=True)
+    parser.add_argument('--server-url', help='Test an existing TTS-Story deployment over HTTP')
+    parser.add_argument('--base-url', help='Remote text-model URL for in-process route testing')
+    parser.add_argument('--model', help='Remote text model for in-process route testing')
     parser.add_argument('--input', type=Path, default=ROOT / 'tests/fixtures/chinese_novel_smoke.txt')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--preset', choices=['chinese-novel', 'chinese-novel-directed', 'chinese-novel-first-person'], default='chinese-novel')
     parser.add_argument('--protagonist', default='叶临渊')
     args = parser.parse_args()
-    import app as application
+    from src.chinese_novel.chapter_detection import find_chinese_heading_matches
     from src.chinese_novel.prompts import join_novel_sections, with_chinese_novel_presets
     from src.tag_validation import TAG
     from src.text_processor import TextProcessor
-    config = dict(application.DEFAULT_CONFIG, llm_provider='local', llm_local_provider='lmstudio',
-                  llm_local_base_url=args.base_url, llm_local_model=args.model,
-                  llm_local_disable_reasoning=True, llm_local_max_tokens=6000,
-                  llm_local_temperature=0.1, llm_backup_profiles=[])
-    application.load_config = lambda: config
-    client = application.app.test_client()
+    if args.server_url:
+        import requests
+        session = requests.Session()
+
+        def post(path, payload):
+            return session.post(args.server_url.rstrip('/') + path, json=payload, timeout=300).json()
+    else:
+        if not args.base_url or not args.model:
+            parser.error('Use --server-url, or both --base-url and --model')
+        import app as application
+        config = dict(application.DEFAULT_CONFIG, llm_provider='local', llm_local_provider='lmstudio',
+                      llm_local_base_url=args.base_url, llm_local_model=args.model,
+                      llm_local_disable_reasoning=True, llm_local_max_tokens=6000,
+                      llm_local_temperature=0.1, llm_backup_profiles=[])
+        application.load_config = lambda: config
+        client = application.app.test_client()
+
+        def post(path, payload):
+            return client.post(path, json=payload).get_json()
     source = args.input.read_text(encoding='utf-8')
     novel = {'language': 'Chinese', 'context_overlap': 300, 'chunk_size': 4000}
     if args.preset == 'chinese-novel-first-person':
         novel.update(narrative_mode='first_person', first_person_protagonist=args.protagonist)
     prompt = next(entry['prompt'] for entry in with_chinese_novel_presets([]) if entry['id'] == args.preset)
     registry = [{'display_name': '叶临渊', 'aliases': ['临渊', '叶兄', '叶公子']}]
-    sections = client.post('/api/gemini/sections', json={
+    sections = post('/api/gemini/sections', {
         'text': source, 'prefer_chapters': True, 'novel_settings': novel,
         'section_headings': ['chapter', '第*章'],
-    }).get_json()
+    })
     if not sections.get('success'):
         raise RuntimeError(sections)
     outputs, speakers = [], []
     for index, section in enumerate(sections['sections'], 1):
-        response = client.post('/api/gemini/process-section', json={
+        payload = post('/api/gemini/process-section', {
             **section, 'prompt_override': prompt, 'novel_settings': novel,
             'character_registry': registry, 'known_speakers': speakers,
         })
-        payload = response.get_json()
         if not payload.get('success'):
             raise RuntimeError(f'Section {index}: {payload}')
         outputs.append(payload['result_text'])
@@ -59,7 +73,7 @@ def main():
     prepared = join_novel_sections(source, sections['sections'], outputs)
     prose = re.sub(r'\[(direction|emotion)\][\s\S]*?\[/\1\]', '', prepared, flags=re.I)
     assert TAG.sub('', prose) == source, 'Prepared text changed source or whitespace'
-    assert len(application.split_text_into_book_sections(prepared, ['chapter'])['sections']) == len(sections['sections'])
+    assert len(find_chinese_heading_matches(prepared)) == len(find_chinese_heading_matches(source))
     assert TextProcessor().has_speaker_tags(prepared)
     segments = TextProcessor().parse_speaker_segments(prepared)
     if args.input.name == 'chinese_first_person_smoke.txt':
@@ -74,11 +88,10 @@ def main():
                    if '“临渊羡鱼' in segment['text'] or '“终于出来了。”' in segment['text'])
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / 'prepared.txt').write_text(prepared, encoding='utf-8')
-    profile_response = client.post('/api/gemini/speaker-profiles', json={
+    profile_payload = post('/api/gemini/speaker-profiles', {
         'speakers': speakers, 'processed_text': prepared, 'context': source,
         'novel_settings': novel,
     })
-    profile_payload = profile_response.get_json()
     (args.output / 'profiles.json').write_text(json.dumps(profile_payload, ensure_ascii=False, indent=2), encoding='utf-8')
     if not profile_payload.get('success'):
         raise RuntimeError(profile_payload)

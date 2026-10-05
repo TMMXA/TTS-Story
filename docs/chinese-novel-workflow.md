@@ -65,8 +65,15 @@ Full Story 下载优先使用 metadata / review manifest 的合法路径，再�
 ```powershell
 python scripts/chinese_novel_smoke.py --base-url http://YOUR-SERVER/v1 --model YOUR-MODEL --output smoke-output
 python scripts/chinese_novel_smoke.py --base-url http://YOUR-SERVER/v1 --model YOUR-MODEL --input tests/fixtures/chinese_first_person_smoke.txt --preset chinese-novel-first-person --output smoke-first-person
+python scripts/chinese_novel_smoke.py --server-url http://YOUR-TTS-STORY:5000 --output deployed-text-smoke
+python scripts/chinese_audio_smoke.py --base-url http://YOUR-TTS-STORY:5000 --output live-audio-smoke --phase all
 ```
 
-用户已同意在没有可用语音服务的情况下暂缓真实语音 E2E。测试没有下载或
-部署文本/语音模型；VoiceDesign/Clone/音色自然度仍需在已有语音部署上试听。
+已复用用户现有 Docker/Qwen3 模型完成真实 VoiceDesign、双章 Clone、暂停
+恢复、单块/角色重生成、重新合并、MP3 下载与 M4B 中文章节导出。语音测试
+脚本会创建专用候选组和测试任务、保留试听音频，不删除现有声音或任务。
+它自动选择测试候选以验证流程；正式制作仍需人工试听、选声线与确认角色归属。
+同一输出目录可用 `--phase voices` / `pause` / `resume` / `review` 等阶段恢复
+验收，发生未知 POST 结果时须先核实服务端，避免重复提交 GPU 任务。
+测试没有在本机下载或部署文本/语音模型。音色自然度和听感仍需人工评估。
 完整中文 UI、人物关系、自动选角和完整 Character Book 不在此阶段。
