@@ -10673,7 +10673,7 @@ def get_gemini_sections():
 
 def _prepare_chinese_section(section, config, prompt_prefix, known_speakers,
                              novel_settings, character_registry, preferred_profile='',
-                             defer_transient_failover=False, **structured_options):
+                             defer_transient_failover=False, prefer_source_locked=False, **structured_options):
     from src.chinese_novel.preparation import prepare_chinese_novel, NovelPreparationError
     active = preferred_profile
     def generate(prompt):
@@ -10687,7 +10687,7 @@ def _prepare_chinese_section(section, config, prompt_prefix, known_speakers,
         prepared = prepare_chinese_novel(section.get('content') or '', generate=generate,
             context=section.get('context') or '', novel_settings=novel_settings,
             character_registry=character_registry, prompt_prefix=prompt_prefix,
-            known_speakers=known_speakers)
+            known_speakers=known_speakers, span_recovery=True, prefer_source_locked=prefer_source_locked)
     except NovelPreparationError as exc:
         logger.warning('Chinese Prep output validation failed: %s; diagnostics=%s', exc, exc.diagnostics)
         raise
@@ -10772,7 +10772,8 @@ def process_gemini_section():
             prepared = _prepare_chinese_section(
                 {'content': content, 'context': data.get('context') or ''}, config, prompt_prefix,
                 known_speakers, novel_settings, character_registry, preferred_profile,
-                defer_transient_failover=True, **structured_options)
+                defer_transient_failover=True, prefer_source_locked=data.get('source_locked_prep') is True,
+                **structured_options)
             response_text, profile_used, provider_failures = (
                 prepared['result_text'], prepared['profile'], prepared['failures'])
             preparation_diagnostics = prepared['diagnostics']
@@ -10853,6 +10854,7 @@ def save_prep_progress():
             "active_profile": data.get('active_profile') or '',
             "prompt_override": str(data.get('prompt_override') or ''),
             "last_failure": str(data.get('last_failure') or '')[:2000],
+            "source_locked_prep": data.get('source_locked_prep') is True,
             "novel_settings": normalize_novel_settings(data.get('novel_settings')),
             "character_registry": data.get('character_registry') or [],
             "timestamp": data.get('timestamp') or int(time.time() * 1000),

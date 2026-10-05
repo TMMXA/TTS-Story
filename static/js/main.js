@@ -3240,6 +3240,7 @@ async function _savePrepProgress(textHash, sections, outputs, knownSpeakers, act
                 character_registry: options.character_registry || getChineseNovelRegistry(),
                 prompt_override: options.prompt_override ?? getSelectedGeminiPromptOverride(),
                 last_failure: options.last_failure || '',
+                source_locked_prep: options.source_locked_prep === true,
                 timestamp: Date.now()
             })
         });
@@ -3467,7 +3468,9 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
             }
         }
 
+        let sourceLockedPrep = savedProgress?.source_locked_prep === true;
         runProgress = {sections, outputs, known_speakers: Array.from(knownSpeakers), active_profile: activeProfile,
+            source_locked_prep: sourceLockedPrep,
             novel_settings: novelSettings, character_registry: characterRegistry, prompt_override: promptOverride};
         await _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile, runProgress);
         const MAX_RETRIES = 5;
@@ -3489,6 +3492,7 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 context: section.context || '',
                 novel_settings: novelSettings,
                 character_registry: characterRegistry,
+                source_locked_prep: sourceLockedPrep,
             };
             if (promptOverride) {
                 payload.prompt_override = promptOverride;
@@ -3573,7 +3577,9 @@ async function _runGeminiPrep(buttonEl, text, textHash, savedProgress) {
                 });
             }
             outputs.push(sectionData.result_text || '');
-            Object.assign(runProgress, {known_speakers: Array.from(knownSpeakers), active_profile: activeProfile});
+            if (sectionData.preparation_diagnostics?.source_locked_parts > 0) sourceLockedPrep = true;
+            Object.assign(runProgress, {known_speakers: Array.from(knownSpeakers), active_profile: activeProfile,
+                source_locked_prep: sourceLockedPrep});
             await _savePrepProgress(textHash, sections, outputs, knownSpeakers, activeProfile, runProgress);
 
             if (_geminiPrepAbortRequested) {

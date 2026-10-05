@@ -141,3 +141,24 @@ def test_persistent_bad_small_segment_raises_instead_of_narrator_fallback():
         prepare_chinese_novel('文' * 250, generate=lambda prompt: (marked('改' * 250), PROFILE, []))
     assert error.value.diagnostics['calls'] == 2
     assert error.value.diagnostics['splits'] == 0
+
+
+@pytest.mark.parametrize('prefer_locked,expected_calls', [(False, 3), (True, 1)])
+def test_locked_role_recovery_assembles_original_prose_and_actual_dialogue_owner(prefer_locked, expected_calls):
+    import json
+    source = '她问：“你来了？”我点头。'
+    calls = []
+    def generate(prompt):
+        calls.append(prompt)
+        if 'LOCKED SPANS JSON:\n' not in prompt:
+            return '[旁白]改写的正文。[/旁白]', PROFILE, []
+        spans = json.loads(prompt.rsplit('LOCKED SPANS JSON:\n', 1)[1])
+        return json.dumps({'annotations': [{'id': span['id'],
+            'speaker': '林清雪' if span['kind'] == 'dialogue' else '旁白'} for span in spans]}, ensure_ascii=False), PROFILE, []
+    result = prepare_chinese_novel(source, generate=generate, span_recovery=True,
+        prefer_source_locked=prefer_locked, novel_settings={'language': 'Chinese'})
+    assert re.sub(r'\[/?(?:旁白|林清雪)\]', '', result['result_text']) == source
+    assert '[林清雪]“你来了？”[/林清雪]' in result['result_text']
+    assert len(calls) == expected_calls
+    assert result['diagnostics']['calls'] == expected_calls
+    assert result['diagnostics']['source_locked_parts'] == 1

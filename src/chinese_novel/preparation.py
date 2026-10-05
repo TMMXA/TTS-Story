@@ -56,7 +56,8 @@ def _failure_kind(exc):
 
 def prepare_chinese_novel(content, *, generate, context='', novel_settings=None,
                           character_registry=None, prompt_prefix='', known_speakers=None,
-                          min_units=250, max_calls=24, correction_attempts=1):
+                          min_units=250, max_calls=24, correction_attempts=1, span_recovery=False,
+                          prefer_source_locked=False):
     """Try once, correct once, then split only failed source spans into smaller ones.
 
     ``generate(prompt)`` returns ``(text, public_profile, provider_failures)``.
@@ -73,7 +74,7 @@ def prepare_chinese_novel(content, *, generate, context='', novel_settings=None,
     speakers = list(dict.fromkeys(str(name) for name in (known_speakers or []) if name))
     failures, last_profile = [], None
     diagnostics = {'calls': 0, 'retries': 0, 'splits': 0, 'accepted_parts': 0,
-                   'recovered': False, 'errors': []}
+                   'recovered': False, 'errors': [], 'source_locked_parts': 0}
 
     def stop(reason):
         raise NovelPreparationError(
@@ -90,7 +91,7 @@ def prepare_chinese_novel(content, *, generate, context='', novel_settings=None,
         if not source.strip():
             return source
         last_kind = ''
-        for attempt in range(1 + correction_attempts):
+        for attempt in range(0 if prefer_source_locked else 1 + correction_attempts):
             if diagnostics['calls'] >= max_calls:
                 stop('model-call budget exhausted')
             prefix = prompt_prefix
@@ -128,6 +129,33 @@ def prepare_chinese_novel(content, *, generate, context='', novel_settings=None,
             diagnostics['errors'].append({'kind': last_kind,
                 'source_units': count_text_units(source),
                 'output_chars': len(response) if isinstance(response, str) else 0})
+
+        if span_recovery or prefer_source_locked:
+            from .span_annotation import annotate_source_spans, SpanAnnotationError
+            def label_spans(prompt):
+                if diagnostics['calls'] >= max_calls:
+                    stop('model-call budget exhausted')
+                diagnostics['calls'] += 1
+                return generate(prompt)
+            try:
+                locked = annotate_source_spans(source, generate=label_spans, context=preceding,
+                    novel_settings=settings, character_registry=registry,
+                    prompt_prefix=prompt_prefix, known_speakers=speakers,
+                    correction_attempts=correction_attempts)
+            except SpanAnnotationError:
+                last_kind = 'invalid_span_annotations'
+                diagnostics['errors'].append({'kind': 'invalid_span_annotations',
+                    'source_units': count_text_units(source), 'output_chars': 0})
+            else:
+                last_profile = locked['profile']
+                failures.extend(locked['failures'])
+                diagnostics['accepted_parts'] += 1
+                diagnostics['source_locked_parts'] += 1
+                accepted = locked['result_text']
+                for speaker in speaker_names(accepted):
+                    if speaker not in speakers:
+                        speakers.append(speaker)
+                return accepted
 
         units = count_text_units(source)
         if units <= min_units:
